@@ -118,46 +118,14 @@ pub fn bake(gta: &Path, log: &mut dyn FnMut(&str)) -> Result<(World, BakeReport)
         }
     }
 
-    // text IPLs, keyed by lowercased stem for stream LOD links
-    let mut texts: Vec<(String, Vec<ipl::IplInst>)> = Vec::new();
-    for f in &dat.ipl {
-        let Some(t) = read_text(gta, f) else {
-            log(&format!("warning: IPL {f} not found"));
-            continue;
-        };
-        let stem = Path::new(&f.replace('\\', "/")).file_stem().map(|s| s.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
-        texts.push((stem, ipl::parse_text(&t)));
-    }
-    // Binary IPLs in the IMGs that are not streams of a gta.dat IPL (barriers1/2, crack, carter, truthsfarm) are
-    // groups the single-player script switches on and off; multiplayer worlds never load them.
-    let stems: HashSet<String> = texts.iter().map(|(s, _)| s.clone()).collect();
-    let stream_base = |name: &str| name.trim_end_matches(".ipl").split("_stream").next().unwrap_or("").to_string();
-    streams.retain(|(name, _)| {
-        let keep = name.contains("_stream") && stems.contains(&stream_base(name));
-        if !keep {
-            rep.script_ipls_skipped += 1;
-        }
-        keep
-    });
-    let mut lods: HashMap<String, HashSet<i32>> = HashMap::new();
-    for (stem, v) in &texts {
-        let set = lods.entry(stem.clone()).or_default();
-        set.extend(v.iter().filter(|i| i.lod >= 0).map(|i| i.lod));
-    }
-    for (name, v) in &streams {
-        let set = lods.entry(stream_base(name)).or_default();
-        set.extend(v.iter().filter(|i| i.lod >= 0).map(|i| i.lod));
-    }
-
+    let (groups, script_skipped, lod_skipped) = ipl_groups(gta, &dat, streams, log);
+    rep.script_ipls_skipped = script_skipped;
+    rep.lod_skipped = lod_skipped;
     let mut missing: HashMap<i32, usize> = HashMap::new();
-    let mut place = |w: &mut World, src: &str, list: &[ipl::IplInst], lod_set: Option<&HashSet<i32>>, rep: &mut BakeReport| {
+    for (src, list) in &groups {
         let source = w.source_index(src);
-        for (k, i) in list.iter().enumerate() {
+        for i in list {
             rep.ipl_instances += 1;
-            if lod_set.is_some_and(|s| s.contains(&(k as i32))) {
-                rep.lod_skipped += 1;
-                continue;
-            }
             if w.add_instance(i.model, ipl_affine(i.pos, i.rot), i.interior, source, INST_BASE) {
                 rep.placed += 1;
             } else {
@@ -165,13 +133,8 @@ pub fn bake(gta: &Path, log: &mut dyn FnMut(&str)) -> Result<(World, BakeReport)
                 *missing.entry(i.model).or_default() += 1;
             }
         }
-    };
-    for (stem, v) in &texts {
-        place(&mut w, &format!("{stem}.ipl"), v, lods.get(stem), &mut rep);
     }
-    for (name, v) in &streams {
-        place(&mut w, name, v, None, &mut rep);
-    }
+    rep.ipl_instances += lod_skipped;
 
     let mut missing: Vec<(i32, usize)> = missing.into_iter().collect();
     missing.sort_by(|a, b| b.1.cmp(&a.1));
@@ -191,4 +154,87 @@ pub fn bake(gta: &Path, log: &mut dyn FnMut(&str)) -> Result<(World, BakeReport)
 
     w.finish();
     Ok((w, rep))
+}
+
+/// The IPL placements the game world shows: the text IPLs listed in gta.dat plus their binary streams, without
+/// LOD instances or the script-only IPL groups. Returns (source name, instances) per IPL, the number of script
+/// IPLs skipped and the number of LOD instances skipped.
+fn ipl_groups(gta: &Path, dat: &DatFile, mut streams: Vec<(String, Vec<ipl::IplInst>)>, log: &mut dyn FnMut(&str)) -> (Vec<(String, Vec<ipl::IplInst>)>, usize, usize) {
+    let mut texts: Vec<(String, Vec<ipl::IplInst>)> = Vec::new();
+    for f in &dat.ipl {
+        let Some(t) = read_text(gta, f) else {
+            log(&format!("warning: IPL {f} not found"));
+            continue;
+        };
+        let stem = Path::new(&f.replace('\\', "/")).file_stem().map(|s| s.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
+        texts.push((stem, ipl::parse_text(&t)));
+    }
+    // Binary IPLs in the IMGs that are not streams of a gta.dat IPL (barriers1/2, crack, carter, truthsfarm) are
+    // groups the single-player script switches on and off; multiplayer worlds never load them.
+    let stems: HashSet<String> = texts.iter().map(|(s, _)| s.clone()).collect();
+    let stream_base = |name: &str| name.trim_end_matches(".ipl").split("_stream").next().unwrap_or("").to_string();
+    let before = streams.len();
+    streams.retain(|(name, _)| name.contains("_stream") && stems.contains(&stream_base(name)));
+    let script_skipped = before - streams.len();
+    let mut lods: HashMap<String, HashSet<i32>> = HashMap::new();
+    for (stem, v) in &texts {
+        lods.entry(stem.clone()).or_default().extend(v.iter().filter(|i| i.lod >= 0).map(|i| i.lod));
+    }
+    for (name, v) in &streams {
+        lods.entry(stream_base(name)).or_default().extend(v.iter().filter(|i| i.lod >= 0).map(|i| i.lod));
+    }
+    let mut lod_skipped = 0;
+    let mut out = Vec::new();
+    for (stem, v) in texts {
+        let set = lods.get(&stem);
+        let kept: Vec<ipl::IplInst> = v.into_iter().enumerate().filter(|(k, _)| !set.is_some_and(|s| s.contains(&(*k as i32)))).map(|(_, i)| i).collect();
+        lod_skipped += set.map(|s| s.len()).unwrap_or(0);
+        out.push((format!("{stem}.ipl"), kept));
+    }
+    out.extend(streams);
+    (out, script_skipped, lod_skipped)
+}
+
+/// One placement of the map, whether or not its model has collision.
+#[derive(Debug, Clone)]
+pub struct MapPlacement {
+    pub model: i32,
+    pub xf: Affine,
+    pub interior: i32,
+    pub source: String,
+}
+
+/// Every placement the multiplayer world shows (what [`bake`] places, plus models without collision such as
+/// plants and lamps). For tools that need the visual map, e.g. rendering a region.
+pub fn map_placements(gta: &Path, log: &mut dyn FnMut(&str)) -> Result<Vec<MapPlacement>, String> {
+    let mut dat = DatFile::default();
+    for f in ["data/default.dat", "data/gta.dat"] {
+        let t = read_text(gta, f).ok_or_else(|| format!("{f} not found under {}", gta.display()))?;
+        DatFile::parse(&t, &mut dat);
+    }
+    let mut streams = Vec::new();
+    let mut imgs = vec!["models/gta3.img".to_string(), "models/gta_int.img".to_string()];
+    imgs.extend(dat.img.iter().cloned());
+    let mut seen = HashSet::new();
+    for rel in &imgs {
+        let Some(path) = resolve_ci(gta, rel) else { continue };
+        if !seen.insert(path.clone()) {
+            continue;
+        }
+        let Ok(mut img) = Img::open(&path) else { continue };
+        let entries = img.entries.clone();
+        for e in entries.iter().filter(|e| e.name.ends_with(".ipl")) {
+            let data = img.read(e).map_err(|x| x.to_string())?;
+            if ipl::is_binary(&data) {
+                if let Ok(v) = ipl::parse_binary(&data) {
+                    streams.push((e.name.clone(), v));
+                }
+            }
+        }
+    }
+    let (groups, _, _) = ipl_groups(gta, &dat, streams, log);
+    Ok(groups
+        .into_iter()
+        .flat_map(|(src, list)| list.into_iter().map(move |i| MapPlacement { model: i.model, xf: ipl_affine(i.pos, i.rot), interior: i.interior, source: src.clone() }))
+        .collect())
 }

@@ -21,7 +21,7 @@ impl Filter {
     pub fn interior(i: i32) -> Filter {
         Filter { interior: if i < 0 { None } else { Some(i) } }
     }
-    fn accepts(&self, interior: i32) -> bool {
+    pub fn accepts(&self, interior: i32) -> bool {
         match self.interior {
             None => true,
             Some(q) => interior == q || interior == ALL_INTERIORS,
@@ -223,6 +223,63 @@ impl World {
             }
         }
         None
+    }
+
+    /// Live instances whose bounds overlap the box `q`.
+    pub fn instances_in(&self, q: Aabb, filter: Filter) -> Vec<u32> {
+        let mut out = Vec::new();
+        bvh::query_box(&self.tlas, q, |f, c| {
+            for k in f..f + c {
+                let ii = self.tlas_order[k as usize];
+                if filter.accepts(self.instances[ii as usize].interior) {
+                    out.push(ii);
+                }
+            }
+        });
+        out
+    }
+
+    /// World-space triangles (a, b, c, material, model) of every live instance whose triangle centroid lies in `q`.
+    /// Spheres are tessellated coarsely.
+    pub fn triangles_in(&self, q: Aabb, filter: Filter) -> Vec<([Vec3; 3], u32, i32)> {
+        let inside = |p: Vec3| p.x >= q.min.x && p.x <= q.max.x && p.y >= q.min.y && p.y <= q.max.y && p.z >= q.min.z && p.z <= q.max.z;
+        let mut out = Vec::new();
+        for ii in self.instances_in(q, filter) {
+            let inst = &self.instances[ii as usize];
+            let m = &self.models[inst.model as usize];
+            for t in &self.tris[m.tri_start as usize..(m.tri_start + m.tri_count) as usize] {
+                let w = [inst.xf.point(t.a), inst.xf.point(t.b), inst.xf.point(t.c)];
+                if inside((w[0] + w[1] + w[2]) * (1.0 / 3.0)) {
+                    out.push((w, t.material, m.id));
+                }
+            }
+            for s in &self.spheres[m.sphere_start as usize..(m.sphere_start + m.sphere_count) as usize] {
+                // octahedron subdivided once
+                let c = s.center;
+                let r = s.radius;
+                let mut faces: Vec<[Vec3; 3]> = Vec::new();
+                let px = [v3(1.0, 0.0, 0.0), v3(-1.0, 0.0, 0.0)];
+                let py = [v3(0.0, 1.0, 0.0), v3(0.0, -1.0, 0.0)];
+                let pz = [v3(0.0, 0.0, 1.0), v3(0.0, 0.0, -1.0)];
+                for a in px {
+                    for b in py {
+                        for cz in pz {
+                            let ab = (a + b).normalize();
+                            let bc = (b + cz).normalize();
+                            let ca = (cz + a).normalize();
+                            faces.extend([[a, ab, ca], [ab, b, bc], [ca, bc, cz], [ab, bc, ca]]);
+                        }
+                    }
+                }
+                for f in faces {
+                    let w = f.map(|p| inst.xf.point(c + p * r));
+                    if inside((w[0] + w[1] + w[2]) * (1.0 / 3.0)) {
+                        out.push((w, s.material, m.id));
+                    }
+                }
+            }
+        }
+        out
     }
 
     /// Instances whose bounds overlap a sphere around `p` (live ones only).

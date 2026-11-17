@@ -88,6 +88,39 @@ enum Cmd {
         #[command(flatten)]
         world: WorldOpts,
     },
+    /// Write the collision triangles inside a box to a Wavefront OBJ (one group per surface material), for
+    /// viewing in Blender or any 3D tool.
+    Export {
+        /// Box corner X Y Z.
+        #[arg(long, num_args = 3, allow_hyphen_values = true)]
+        min: Vec<f32>,
+        /// Opposite box corner X Y Z.
+        #[arg(long, num_args = 3, allow_hyphen_values = true)]
+        max: Vec<f32>,
+        /// Subtract this point from every vertex (keeps coordinates small for 3D tools).
+        #[arg(long, num_args = 3, allow_hyphen_values = true)]
+        origin: Option<Vec<f32>>,
+        #[arg(short, long)]
+        out: PathBuf,
+        #[command(flatten)]
+        world: WorldOpts,
+    },
+    /// List every map placement (with or without collision) whose position lies inside a box, from a game
+    /// install, as JSON: model id, interior, source IPL and the 4x4 world matrix (column-major).
+    Placements {
+        #[arg(long)]
+        gta: PathBuf,
+        #[arg(long, num_args = 3, allow_hyphen_values = true)]
+        min: Vec<f32>,
+        #[arg(long, num_args = 3, allow_hyphen_values = true)]
+        max: Vec<f32>,
+        /// Only this interior (-1 = all).
+        #[arg(long, default_value_t = 0, allow_hyphen_values = true)]
+        interior: i32,
+        /// Extend the box by this margin for objects whose position is outside but which may reach inside.
+        #[arg(long, default_value_t = 0.0)]
+        margin: f32,
+    },
     /// Build a world file from a game install (maintainers: regenerates data/vanilla.sagw.zst).
     Bake {
         #[arg(long)]
@@ -169,6 +202,9 @@ fn ground_json(w: &World, q: &GroundQ) -> Value {
             let mut v = hit_json(w, &h);
             v["rot"] = json!([r3(p.rot[0]), r3(p.rot[1]), r3(p.rot[2])]);
             v["pos"] = json!([r3(p.pos.x), r3(p.pos.y), r3(p.pos.z)]);
+            if let Some(b) = q.model.and_then(|m| w.model_bounds(m)) {
+                v["bounds"] = json!([[r3(b.min.x), r3(b.min.y), r3(b.min.z)], [r3(b.max.x), r3(b.max.y), r3(b.max.z)]]);
+            }
             v["water_z"] = json!(water.map(r3));
             v["underwater"] = json!(water.is_some_and(|wz| wz > h.pos.z));
             v
@@ -304,6 +340,50 @@ fn main() {
                     println!("{}", serde_json::to_string_pretty(&v).unwrap());
                 }
             }
+        }
+        Cmd::Export { min, max, origin, out, world } => {
+            let w = load(&world);
+            let q = sa_world::math::Aabb { min: v3(min[0], min[1], min[2]).min(v3(max[0], max[1], max[2])), max: v3(min[0], min[1], min[2]).max(v3(max[0], max[1], max[2])) };
+            let o = origin.map(|o| v3(o[0], o[1], o[2])).unwrap_or(sa_world::Vec3::ZERO);
+            let mut tris = w.triangles_in(q, Filter::interior(world.interior));
+            tris.sort_by_key(|t| t.1);
+            let mut f = std::io::BufWriter::new(std::fs::File::create(&out).unwrap_or_else(|e| die(format!("{}: {e}", out.display()))));
+            writeln!(f, "# sa-geom collision export: {} triangles", tris.len()).unwrap();
+            let mut current = u32::MAX;
+            for (i, (t, mat, _)) in tris.iter().enumerate() {
+                if *mat != current {
+                    current = *mat;
+                    let name = w.material_name(*mat);
+                    writeln!(f, "g {}\nusemtl {}", if name.is_empty() { format!("mat{mat}") } else { name.to_string() }, if name.is_empty() { format!("mat{mat}") } else { name.to_string() }).unwrap();
+                }
+                for p in t {
+                    let p = *p - o;
+                    writeln!(f, "v {:.4} {:.4} {:.4}", p.x, p.y, p.z).unwrap();
+                }
+                let k = i * 3 + 1;
+                writeln!(f, "f {} {} {}", k, k + 1, k + 2).unwrap();
+            }
+            eprintln!("wrote {} ({} triangles)", out.display(), tris.len());
+        }
+        Cmd::Placements { gta, min, max, interior, margin } => {
+            let all = sa_world::bake::map_placements(&gta, &mut |m| eprintln!("{m}")).unwrap_or_else(|e| die(e));
+            let (lo, hi) = (v3(min[0], min[1], min[2]).min(v3(max[0], max[1], max[2])), v3(min[0], min[1], min[2]).max(v3(max[0], max[1], max[2])));
+            let m = v3(margin, margin, margin);
+            let (lo, hi) = (lo - m, hi + m);
+            let list: Vec<Value> = all
+                .iter()
+                .filter(|p| interior < 0 || p.interior == interior)
+                .filter(|p| { let t = p.xf.t; t.x >= lo.x && t.x <= hi.x && t.y >= lo.y && t.y <= hi.y && t.z >= lo.z && t.z <= hi.z })
+                .map(|p| {
+                    let x = &p.xf;
+                    json!({
+                        "model": p.model, "interior": p.interior, "source": p.source,
+                        "matrix": [[x.x.x, x.x.y, x.x.z, 0.0], [x.y.x, x.y.y, x.y.z, 0.0], [x.z.x, x.z.y, x.z.z, 0.0], [x.t.x, x.t.y, x.t.z, 1.0]],
+                    })
+                })
+                .collect();
+            println!("{}", serde_json::to_string(&list).unwrap());
+            eprintln!("{} placements", list.len());
         }
         Cmd::Bake { gta, out, level } => {
             let t = Instant::now();
