@@ -1,0 +1,97 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  linux-windows:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-gnu,i686-unknown-linux-gnu,x86_64-pc-windows-gnu,i686-pc-windows-gnu
+      - uses: Swatinem/rust-cache@v2
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.13.0
+      - name: Install cargo-zigbuild and MinGW
+        run: |
+          cargo install --locked cargo-zigbuild
+          sudo apt-get update && sudo apt-get install -y mingw-w64
+      - name: Build (Linux, glibc 2.17)
+        run: |
+          cargo zigbuild --release -p sa-geom-cli --target x86_64-unknown-linux-gnu.2.17
+          cargo zigbuild --release -p sa-geom-mta --target x86_64-unknown-linux-gnu.2.17
+          cargo zigbuild --release -p sa-geom-mta --target i686-unknown-linux-gnu.2.17
+          cargo zigbuild --release -p sa-geom-samp --target i686-unknown-linux-gnu.2.17
+      - name: Build (Windows)
+        env:
+          CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER: x86_64-w64-mingw32-gcc
+          CARGO_TARGET_I686_PC_WINDOWS_GNU_LINKER: i686-w64-mingw32-gcc
+        run: |
+          cargo build --release -p sa-geom-cli --target x86_64-pc-windows-gnu
+          cargo build --release -p sa-geom-mta --target x86_64-pc-windows-gnu
+          cargo build --release -p sa-geom-mta --target i686-pc-windows-gnu
+          cargo build --release -p sa-geom-samp --target i686-pc-windows-gnu
+      - name: Package
+        run: |
+          set -e
+          T=target; D=dist; mkdir -p $D
+          pkg() { name=$1; shift; mkdir -p "stage/$name"; cp "$@" "stage/$name/"; cp README.md LICENSE "stage/$name/"; }
+          pkg sa-geom-cli-linux-x64       $T/x86_64-unknown-linux-gnu/release/sa-geom
+          pkg sa-geom-cli-windows-x64     $T/x86_64-pc-windows-gnu/release/sa-geom.exe
+          mkdir -p stage/sa-geom-mta-linux-x64 stage/sa-geom-mta-linux-x86 stage/sa-geom-mta-windows-x64 stage/sa-geom-mta-windows-x86
+          cp $T/x86_64-unknown-linux-gnu/release/libml_sageom.so stage/sa-geom-mta-linux-x64/ml_sageom.so
+          cp $T/i686-unknown-linux-gnu/release/libml_sageom.so   stage/sa-geom-mta-linux-x86/ml_sageom.so
+          cp $T/x86_64-pc-windows-gnu/release/ml_sageom.dll      stage/sa-geom-mta-windows-x64/ml_sageom.dll
+          cp $T/i686-pc-windows-gnu/release/ml_sageom.dll        stage/sa-geom-mta-windows-x86/ml_sageom.dll
+          for d in stage/sa-geom-mta-*; do cp README.md LICENSE $d/; cp -r examples/mta/sageom-example $d/; done
+          mkdir -p stage/sa-geom-samp-linux/plugins stage/sa-geom-samp-windows/plugins
+          cp $T/i686-unknown-linux-gnu/release/libsageom.so stage/sa-geom-samp-linux/plugins/sageom.so
+          cp $T/i686-pc-windows-gnu/release/sageom.dll      stage/sa-geom-samp-windows/plugins/sageom.dll
+          for d in stage/sa-geom-samp-*; do mkdir -p $d/include $d/filterscripts; cp include/sageom.inc $d/include/; cp examples/samp/sageom_example.pwn $d/filterscripts/; cp README.md LICENSE $d/; done
+          cd stage
+          for d in *; do
+            case $d in *windows*) zip -qr ../$D/$d.zip $d ;; *) tar czf ../$D/$d.tar.gz $d ;; esac
+          done
+          cd ..; ls -la $D
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-linux-windows
+          path: dist/*
+
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --release -p sa-geom-cli
+      - run: |
+          mkdir -p dist stage/sa-geom-cli-macos-arm64
+          cp target/release/sa-geom README.md LICENSE stage/sa-geom-cli-macos-arm64/
+          tar czf dist/sa-geom-cli-macos-arm64.tar.gz -C stage sa-geom-cli-macos-arm64
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-macos
+          path: dist/*
+
+  publish:
+    needs: [linux-windows, macos]
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true

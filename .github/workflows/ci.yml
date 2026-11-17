@@ -1,0 +1,19 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --workspace --release
+      - name: Smoke test the CLI against the embedded world
+        run: |
+          cargo run --release -p sa-geom-cli -- info
+          cargo run --release -p sa-geom-cli -- ground 2495 -1687 --model 1271
