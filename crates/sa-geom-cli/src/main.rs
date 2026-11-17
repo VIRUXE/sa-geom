@@ -52,10 +52,28 @@ enum Cmd {
         /// normal of the plane through the corners.
         #[arg(long, value_parser = parse_pair, conflicts_with = "model")]
         footprint: Option<(f32, f32)>,
-        /// Place this model: its collision bounds give the footprint and lift its base (not its origin) onto
-        /// the ground.
+        /// Place this model: its shape (render mesh, else collision bounds) gives the footprint and lifts its
+        /// lowest point (not its origin) onto the ground.
         #[arg(long, allow_hyphen_values = true)]
         model: Option<i32>,
+        /// The model's rest rotation RX,RY,RZ (GTA Euler degrees) before the yaw, e.g. 90,0,0 for a rifle lying
+        /// on its side. The returned rotation includes it.
+        #[arg(long, value_parser = parse_triple, requires = "model")]
+        rest: Option<[f32; 3]>,
+        /// With --model: how far (metres) collision may reach into the model's box before `blocked` reports it.
+        /// The box comes from the visual mesh, mirrors and trim included.
+        #[arg(long, default_value_t = 0.15)]
+        margin: f32,
+        #[command(flatten)]
+        world: WorldOpts,
+    },
+    /// What sa-geom knows about models: kind, where their shape comes from, size and how high their origin sits
+    /// above their lowest point (in a rest rotation, if given). JSON, one object per model.
+    Model {
+        #[arg(required = true)]
+        ids: Vec<i32>,
+        #[arg(long, value_parser = parse_triple)]
+        rest: Option<[f32; 3]>,
         #[command(flatten)]
         world: WorldOpts,
     },
@@ -66,7 +84,7 @@ enum Cmd {
         #[command(flatten)]
         world: WorldOpts,
     },
-    /// Many ground queries from stdin, one per line: JSON objects {"x","y","z"?,"yaw"?,"lift"?,"w"?,"d"?,"model"?,"interior"?}
+    /// Many ground queries from stdin, one per line: JSON objects {"x","y","z"?,"yaw"?,"lift"?,"w"?,"d"?,"model"?,"rest"?:[rx,ry,rz],"margin"?,"interior"?}
     /// or CSV "x,y[,z[,yaw[,lift]]]" (z = where the downward ray starts, default 1000).
     Batch {
         /// Output format.
@@ -138,6 +156,36 @@ fn parse_pair(s: &str) -> Result<(f32, f32), String> {
     Ok((a.trim().parse().map_err(|e| format!("{e}"))?, b.trim().parse().map_err(|e| format!("{e}"))?))
 }
 
+fn parse_triple(s: &str) -> Result<[f32; 3], String> {
+    let v: Vec<f32> = s.split(',').map(|p| p.trim().parse::<f32>().map_err(|e| format!("{e}"))).collect::<Result<_, _>>()?;
+    v.try_into().map_err(|_| "expected RX,RY,RZ".to_string())
+}
+
+fn kind_name(k: u32) -> &'static str {
+    match k {
+        sa_world::shape::KIND_VEHICLE => "vehicle",
+        sa_world::shape::KIND_WEAPON => "weapon",
+        _ => "object",
+    }
+}
+
+fn model_json(w: &World, id: i32, rest: [f32; 3]) -> Value {
+    let mut v = json!({ "model": id, "name": w.names.get(&id).cloned().unwrap_or_default(), "kind": kind_name(sa_world::shape::kind_of(id)) });
+    match w.model_rest(id, rest) {
+        Some((r, src)) => {
+            v["shape"] = json!(src);
+            v["base"] = json!(r3(r.base));
+            v["size"] = json!([r3(r.size.x), r3(r.size.y), r3(r.size.z)]);
+            v["rect"] = json!(r.rect.map(r3));
+        }
+        None => v["shape"] = json!(null),
+    }
+    if let Some(b) = w.model_bounds(id) {
+        v["collision"] = json!([[r3(b.min.x), r3(b.min.y), r3(b.min.z)], [r3(b.max.x), r3(b.max.y), r3(b.max.z)]]);
+    }
+    v
+}
+
 fn die(msg: impl std::fmt::Display) -> ! {
     eprintln!("sa-geom: {msg}");
     std::process::exit(2)
@@ -186,13 +234,25 @@ struct GroundQ {
     lift: f32,
     footprint: Option<(f32, f32)>,
     model: Option<i32>,
+    rest: Option<[f32; 3]>,
+    /// How far into the model's box something may reach before it counts as blocking.
+    margin: f32,
     interior: i32,
 }
 
 fn ground_json(w: &World, q: &GroundQ) -> Value {
     let f = Filter::interior(q.interior);
+    let mut gap = None;
+    let mut blocked = None;
     let r = match (q.model, q.footprint) {
-        (Some(m), _) => w.place_model(m, q.x, q.y, q.from, q.depth, q.yaw, q.lift, f).map(|(p, h)| (h, p)),
+        (Some(m), _) => w.lay_model(m, q.x, q.y, q.from, q.depth, q.yaw, q.rest.unwrap_or([0.0; 3]), q.lift, f).map(|l| {
+            gap = Some(l.gap);
+            // body clearance: shrink by `margin` (mirrors and trim stick out of the body), ignore the bottom fifth (at
+            // most 0.4 m: wheels, kerbs, the ground)
+            let floor = l.rest.map(|r| (r.size.z * 0.2).clamp(0.02, 0.4)).unwrap_or(0.0);
+            blocked = Some(w.obstruction(&l, q.margin, floor, f));
+            (l.hit, l.placement)
+        }),
         (None, Some((fw, fd))) => w.footprint(q.x, q.y, q.from, q.depth, q.yaw, fw, fd, f).map(|h| (h, place(h.pos, h.normal, q.yaw, q.lift))),
         (None, None) => w.ground(q.x, q.y, q.from, q.depth, f).map(|h| (h, place(h.pos, h.normal, q.yaw, q.lift))),
     };
@@ -202,8 +262,18 @@ fn ground_json(w: &World, q: &GroundQ) -> Value {
             let mut v = hit_json(w, &h);
             v["rot"] = json!([r3(p.rot[0]), r3(p.rot[1]), r3(p.rot[2])]);
             v["pos"] = json!([r3(p.pos.x), r3(p.pos.y), r3(p.pos.z)]);
-            if let Some(b) = q.model.and_then(|m| w.model_bounds(m)) {
-                v["bounds"] = json!([[r3(b.min.x), r3(b.min.y), r3(b.min.z)], [r3(b.max.x), r3(b.max.y), r3(b.max.z)]]);
+            if let Some(m) = q.model {
+                let mj = model_json(w, m, q.rest.unwrap_or([0.0; 3]));
+                v["shape"] = mj["shape"].clone();
+                v["gap"] = json!(gap.map(r3));
+                v["blocked"] = match blocked.flatten() {
+                    Some(b) => json!({ "model": b.model, "name": w.names.get(&b.model).cloned().unwrap_or_default(), "at": [r3(b.at.x), r3(b.at.y), r3(b.at.z)] }),
+                    None => Value::Null,
+                };
+                v["base"] = mj["base"].clone();
+                if let Some(b) = w.model_bounds(m) {
+                    v["bounds"] = json!([[r3(b.min.x), r3(b.min.y), r3(b.min.z)], [r3(b.max.x), r3(b.max.y), r3(b.max.z)]]);
+                }
             }
             v["water_z"] = json!(water.map(r3));
             v["underwater"] = json!(water.is_some_and(|wz| wz > h.pos.z));
@@ -216,13 +286,18 @@ fn ground_json(w: &World, q: &GroundQ) -> Value {
 fn main() {
     let cli = Cli::parse();
     match cli.cmd {
-        Cmd::Ground { x, y, from, depth, yaw, lift, footprint, model, world } => {
+        Cmd::Ground { x, y, from, depth, yaw, lift, footprint, model, rest, margin, world } => {
             let w = load(&world);
-            let v = ground_json(&w, &GroundQ { x, y, from, depth, yaw, lift, footprint, model, interior: world.interior });
+            let v = ground_json(&w, &GroundQ { x, y, from, depth, yaw, lift, footprint, model, rest, margin, interior: world.interior });
             println!("{}", serde_json::to_string_pretty(&v).unwrap());
             if v["hit"] == false {
                 std::process::exit(1);
             }
+        }
+        Cmd::Model { ids, rest, world } => {
+            let w = load(&world);
+            let list: Vec<Value> = ids.iter().map(|&id| model_json(&w, id, rest.unwrap_or([0.0; 3]))).collect();
+            println!("{}", serde_json::to_string_pretty(&list).unwrap());
         }
         Cmd::Ray { coords, world } => {
             let w = load(&world);
@@ -264,6 +339,11 @@ fn main() {
                         lift: g("lift").unwrap_or(0.0),
                         footprint: fp,
                         model: v.get("model").and_then(|x| x.as_i64()).map(|m| m as i32),
+                        margin: g("margin").unwrap_or(0.15),
+                        rest: v.get("rest").and_then(|r| r.as_array()).and_then(|a| {
+                            let f: Vec<f32> = a.iter().filter_map(|x| x.as_f64()).map(|x| x as f32).collect();
+                            f.try_into().ok()
+                        }),
                         interior: g("interior").map(|i| i as i32).unwrap_or(world.interior),
                     };
                     (q, Some(v))
@@ -281,6 +361,8 @@ fn main() {
                         lift: n.get(4).copied().unwrap_or(0.0),
                         footprint: None,
                         model: None,
+                        rest: None,
+                        margin: 0.15,
                         interior: world.interior,
                     };
                     (q, None)
@@ -333,6 +415,7 @@ fn main() {
                         "instances": w.instances.len(),
                         "live_instances": w.live_instances(),
                         "water_polygons": w.water.len(),
+                        "shapes": w.shapes.len(),
                         "materials": w.materials.len(),
                         "embedded_bytes": sa_world::embedded_bytes().map(|b| b.len()),
                         "load_ms": load_ms,

@@ -5,7 +5,7 @@ use bytemuck::Pod;
 use std::io::Read;
 
 const MAGIC: &[u8; 4] = b"SAGW";
-pub const FORMAT_VERSION: u32 = 1;
+pub const FORMAT_VERSION: u32 = 2;
 
 #[derive(Debug)]
 pub struct IoError(pub String);
@@ -84,6 +84,8 @@ impl World {
             out.extend_from_slice(&id.to_le_bytes());
             put_str(&mut out, n);
         }
+        put_pod(&mut out, &self.shapes);
+        put_pod(&mut out, &self.shape_pts);
         out
     }
 
@@ -118,6 +120,11 @@ impl World {
             let id = c.u32()? as i32;
             let n = c.string()?;
             w.names.insert(id, n);
+        }
+        w.shapes = c.pod()?;
+        w.shape_pts = c.pod()?;
+        for (i, s) in w.shapes.iter().enumerate() {
+            w.shape_by_id.insert(s.id, i as u32);
         }
         for (i, m) in w.models.iter().enumerate() {
             w.by_id.insert(m.id, i as u32);

@@ -107,7 +107,7 @@ open.mp's quaternions. The object's up axis follows the surface normal, and its 
 | `sageomGround(x, y [, zFrom, interior, depth])` | `z, nx, ny, nz, material, model` or `false` |
 | `sageomRaycast(x1, y1, z1, x2, y2, z2 [, interior])` | `true, x, y, z, nx, ny, nz, material, model` or `false` |
 | `sageomPlace(x, y, zFrom, yaw [, lift, interior, width, depth])` | `x, y, z, rx, ry, rz, nx, ny, nz` or `false` |
-| `sageomPlaceModel(model, x, y, zFrom, yaw [, lift, interior])` | `x, y, z, rx, ry, rz, nx, ny, nz` or `false` |
+| `sageomPlaceModel(model, x, y, zFrom, yaw [, lift, interior, restX, restY, restZ])` | `x, y, z, rx, ry, rz, nx, ny, nz` or `false` |
 | `sageomGetModelBounds(model)` | `minX, minY, minZ, maxX, maxY, maxZ` or `false` |
 | `sageomGroundMany({ {x, y [, zFrom]}, ... } [, interior])` | `{ {z, nx, ny, nz} or false, ... }` |
 | `sageomWaterLevel(x, y)` | `z` or `false` |
@@ -125,7 +125,7 @@ native bool:SAGeom_RayCast(Float:x1, Float:y1, Float:z1, Float:x2, Float:y2, Flo
 native bool:SAGeom_Place(Float:x, Float:y, Float:zFrom, Float:yaw, &Float:z, &Float:rx, &Float:ry, &Float:rz,
     Float:lift = 0.0, interior = 0, Float:width = 0.0, Float:depth = 0.0);
 native bool:SAGeom_PlaceModel(modelid, Float:x, Float:y, Float:zFrom, Float:yaw, &Float:z, &Float:rx, &Float:ry,
-    &Float:rz, Float:lift = 0.0, interior = 0);
+    &Float:rz, Float:lift = 0.0, interior = 0, Float:restX = 0.0, Float:restY = 0.0, Float:restZ = 0.0);
 native bool:SAGeom_GetModelBounds(modelid, &Float:minX, &Float:minY, &Float:minZ, &Float:maxX, &Float:maxY, &Float:maxZ);
 native bool:SAGeom_WaterLevel(Float:x, Float:y, &Float:z);
 native bool:SAGeom_AddOverlay(const path[]);   // relative to scriptfiles/
@@ -139,19 +139,30 @@ native bool:SAGeom_AddOverlay(const path[]);   // relative to scriptfiles/
 <sub>The same 3 × 7 m container (model 2934) on a 30° slope. Left: its origin at the ground height and no tilt,
 as most scripts do it. Right: <code>PlaceModel</code>.</sub>
 
-- **`*PlaceModel`** is usually what you want. It reads the model's collision bounds, samples the ground under
-  the corners of its base, tilts it to the plane through them, and lifts its origin by however far the origin
-  sits above the base. A long crate across a ridge or a dip rests on it instead of sinking in or floating, and
+- **`*PlaceModel`** is usually what you want. It reads the model's shape, samples the ground under the corners
+  of its base, tilts it to the plane through them, and lifts its origin by however far the origin sits above the
+  model's lowest point. A long crate across a ridge or a dip rests on it instead of sinking in or floating, and
   models whose origin is mid-height don't end up half buried.
+- **Shapes come from the render mesh.** Every model's `.dff` is baked into a small hull (26 extreme points), so
+  models without collision (weapons, cans, ammo boxes, most pickups) and vehicles (whose collision is only the
+  body: the wheels come from the mesh) land right too. Damaged parts, low-detail parts and muzzle flashes are
+  left out. Models without a mesh fall back to their collision bounds.
+- **Rest rotations.** Pass `restX, restY, restZ` (CLI `--rest RX,RY,RZ`) for a model that lies in a pose of its
+  own before the heading, e.g. `90, 0, 0` for a rifle on its side. The lift is measured in that pose and the
+  returned rotation includes it, so `createObject(model, x, y, z, rx, ry, rz)` is all it takes.
 - **`*Place`** lays something on the ground under a single point. Give it `width`/`depth` for a footprint.
 - **`*Ground`** gives you the raw height and normal to use however you like.
-- Models without collision (small props, plants) have no bounds. `*PlaceModel` falls back to a single point
-  with no base offset for those.
+- `ground --model` also says whether the model fits: `blocked` names the first object reaching more than `--margin`
+  (0.15 m) into its box in that pose (a wall, fence, pole, low roof; the bottom fifth is ignored so the ground,
+  kerbs and wheels don't count), and `gap` is how far it is propped above the ground under its origin.
+- `sa-geom model ID... [--rest RX,RY,RZ]` tells you what sa-geom knows about a model: its kind (object,
+  weapon, vehicle), where its shape comes from, its size and how high its origin sits above its lowest point.
 
 ### CLI
 
 ```
-sa-geom ground X Y [--from Z] [--yaw D] [--lift M] [--model ID | --footprint W,D] [--interior N]
+sa-geom ground X Y [--from Z] [--yaw D] [--lift M] [--model ID [--rest RX,RY,RZ] | --footprint W,D] [--interior N]
+sa-geom model  ID... [--rest RX,RY,RZ]                                   # kind, shape, size, origin height
 sa-geom ray    X1 Y1 Z1 X2 Y2 Z2
 sa-geom batch  [--format jsonl|csv] [--above M] < points
 sa-geom info   [--at X Y Z --radius R]
@@ -163,7 +174,7 @@ sa-geom bake   --gta DIR -o world.sagw.zst
 Every command accepts `--overlay FILE` (repeatable), `--world FILE` (use another baked world) and `--gta DIR`
 (build from a game install in memory, e.g. a modded one).
 
-`batch` reads one query per line: JSON (`{"x":..,"y":..,"z":..,"yaw":..,"model":..,"w":..,"d":..,"interior":..}`,
+`batch` reads one query per line: JSON (`{"x":..,"y":..,"z":..,"yaw":..,"model":..,"rest":[rx,ry,rz],"w":..,"d":..,"interior":..}`,
 where `z` is where the point is stored and the ray starts `--above` metres higher) or CSV (`x,y[,z[,yaw[,lift]]]`).
 It writes one result per line. About 2,000 queries take 0.2 s after a 1 s load. In the output, `z` and the normal are the
 surface that was hit, and `pos`/`rot` (CSV: x, y, z, rx, ry, rz) are where to create the object and how to turn it.
@@ -175,6 +186,35 @@ x,y,z,nx,ny,nz,rx,ry,rz,material,model
 -2300.0,-1700.0,478.6807,0.0041,-0.3217,0.9468,18.7641,0.2337,0.0,123,18319
 ```
 
+## Fixing a spawn list
+
+Most servers have hand-recorded spawn lists: loot points, vehicle spawns, pickups. They were stored at the height
+of whoever recorded them, flat, for whatever model happened to be used. Each point then spawns many different
+models, and each needs its own height and tilt: a lying rifle, an ammo box and a pickup truck on the same slope
+don't share a z.
+
+[`examples/spawn-points`](examples/spawn-points) fixes such a list offline in one pass. It takes the points and the
+models each can spawn, and writes a placement for every point × model (× heading, for spawn systems that flip
+cars), plus a report of the points that need a human: no ground under them, a wall or pole in the way, standing on
+something the world doesn't have, under water, or too steep.
+
+```console
+$ python3 examples/spawn-points/fix_spawns.py vehicles.csv --models 400,422,461,468 --flip \
+      --overlay mymaps.toml -o placements.jsonl --report check.csv
+2017 points, 63669 placements, 145 points flagged
+```
+
+Loot scattered around a point (item *i* of *n* at angle *i*·360/*n*, a few tens of centimetres out) has a small,
+fixed set of slots. `--scatter R --max N` measures each one, so items that roll off a table edge or down a step
+can be pulled back in.
+
+![Loot on a slope before and after: items stored at the point's height float or sink, sa-geom lays each one flat on the ground under it](https://raw.githubusercontent.com/VIRUXE/sa-geom/main/docs/images/spawns-items.jpg)
+
+![Vehicle spawns before and after: cars at a recorded height, level, sink into a hillside or hang in the air; placed by sa-geom they stand on their wheels, tilted to the slope](https://raw.githubusercontent.com/VIRUXE/sa-geom/main/docs/images/spawns-vehicles.jpg)
+
+Leave the module for what only happens in game: a player dropping an item, a crate landing, a car being put back
+on a road.
+
 ## Your own maps and models
 
 The built-in world is vanilla San Andreas: every placement from the IPLs in `gta.dat` and their binary
@@ -183,7 +223,7 @@ out, because multiplayer servers never load them. Anything you add goes in as an
 
 - an MTA `.map` (`<object>`, `<removeWorldObject>`)
 - a Pawn file (`CreateObject`, `CreateDynamicObject`, `RemoveBuildingForPlayer`)
-- an `.ipl`, a `.col`, an `.ide` or an `.img`
+- an `.ipl`, a `.col`, an `.ide`, a `.dff` or an `.img` (its `.col`s add collision, its `.dff`s add shapes)
 - a [TOML manifest](examples/overlay.toml) that combines any of these, with wildcards
 
 ```lua
@@ -196,7 +236,8 @@ SAGeom_AddOverlay("maps/mymap.pwn");
 $ sa-geom ground 2495 -1687 --overlay mymaps.toml
 ```
 
-Objects only collide if the world has collision for their model. Vanilla models do. For SA-MP's added objects
+Objects only collide if the world has collision for their model. Models you place by shape need a `.dff`
+the world knows (in an `.img`, or loose `.dff` files listed in a manifest's `dff` entries). Vanilla models do. For SA-MP's added objects
 (ids 18631 and up), add the SA-MP client's `SAMPCOL.img` and `SAMP.ide`. With those, 781 SA-MP models gain
 collision. Do the same for custom models with their `.col` files.
 

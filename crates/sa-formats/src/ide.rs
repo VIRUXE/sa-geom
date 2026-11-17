@@ -9,9 +9,12 @@ pub struct IdeObject {
     pub name: String,
     pub draw_distance: f32,
     pub flags: u32,
+    /// The IDE section it came from (`objs`, `tobj`, `anim`, `cars`, `weap`, `hier`).
+    pub kind: String,
 }
 
-/// Parse `objs`, `tobj` and `anim` sections. Other sections (peds, cars, weap, hier, txdp, 2dfx, path) are skipped.
+/// Parse `objs`, `tobj`, `anim`, `cars`, `weap` and `hier` sections. Other sections (peds, txdp, 2dfx, path) are
+/// skipped. For `cars`, `weap` and `hier` only the id and name are meaningful.
 pub fn parse(text: &str) -> Vec<IdeObject> {
     let mut out = Vec::new();
     let mut section = String::new();
@@ -25,7 +28,7 @@ pub fn parse(text: &str) -> Vec<IdeObject> {
             section = if low == "end" { String::new() } else { low };
             continue;
         }
-        if !matches!(section.as_str(), "objs" | "tobj" | "anim") {
+        if !matches!(section.as_str(), "objs" | "tobj" | "anim" | "cars" | "weap" | "hier") {
             continue;
         }
         let f: Vec<&str> = l.split(',').map(|s| s.trim()).collect();
@@ -34,6 +37,10 @@ pub fn parse(text: &str) -> Vec<IdeObject> {
         }
         let Ok(id) = f[0].parse::<i32>() else { continue };
         let name = f[1].to_ascii_lowercase();
+        if matches!(section.as_str(), "cars" | "weap" | "hier") {
+            out.push(IdeObject { id, name, draw_distance: 0.0, flags: 0, kind: section.clone() });
+            continue;
+        }
         // objs: id, model, txd, dist, flags  (SA). Older variants: id, model, txd, meshcount, dist..., flags
         // anim: id, model, txd, anim, dist, flags. tobj: objs + timeOn, timeOff.
         let (dist, flags) = match section.as_str() {
@@ -48,7 +55,7 @@ pub fn parse(text: &str) -> Vec<IdeObject> {
                 }
             }
         };
-        out.push(IdeObject { id, name, draw_distance: dist, flags });
+        out.push(IdeObject { id, name, draw_distance: dist, flags, kind: section.clone() });
     }
     out
 }

@@ -137,11 +137,21 @@ for b in S.get("boxes", []):
 library = {}
 
 
+def atomic_frames(path):
+    """Frame name of each atomic of a .dff, in the order gta-scout builds them."""
+    from gtaLib.dff import dff
+    from asset_catalog_dragon import clumps
+    d = dff()
+    d.load_file(path)
+    return [c.frame_list[a.frame].name for c in clumps(d) for a in c.atomic_list]
+
+
 def load_library(input_path, scout_root):
     import importlib.util
     import os
     os.environ.setdefault("DRAGONFF_PATH", os.path.join(scout_root, "references", "DragonFF"))
     sys.path.insert(0, os.path.join(scout_root, "scripts"))
+    sys.path.insert(0, os.environ["DRAGONFF_PATH"])
     spec = importlib.util.spec_from_file_location("scout_render", os.path.join(scout_root, "scripts", "render-asset-catalog-views.py"))
     scout = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(scout)
@@ -153,6 +163,11 @@ def load_library(input_path, scout_root):
         except Exception as e:  # skinned/empty models: skip, they are not map geometry
             print("skip model", mid, e)
             continue
+        if 321 <= mid <= 372:  # weapons: drop the muzzle-flash card, the game only shows it while firing
+            for ob, fr in zip(list(objs), atomic_frames(a["dff"])):
+                if fr == "gunflash":
+                    objs.remove(ob)
+                    bpy.data.objects.remove(ob)
         parts = []
         for ob in objs:
             for m in ob.data.materials:
@@ -175,6 +190,107 @@ def place_model(mid, world):
         ob.matrix_world = world @ local
 
 
+# ---- vehicles: the game assembles them at run time, so build them the same way: drop damaged (_dam) and
+# low-detail (_vlo) parts and the random extras, clone the one "wheel" atomic (under wheel_rf_dummy) onto every
+# wheel dummy (turned round on the left side), and paint the placeholder colours (green = primary, magenta =
+# secondary, the light colours) the way the game does.
+
+LIGHTS = {(255, 175, 0): "#e9e6dc", (0, 255, 200): "#e9e6dc", (185, 255, 0): "#8a1010", (255, 60, 0): "#8a1010"}
+WHEELS = ("wheel_rf_dummy", "wheel_lf_dummy", "wheel_rb_dummy", "wheel_lb_dummy", "wheel_rm_dummy", "wheel_lm_dummy")
+
+
+def vehicle_material(color, tex_path, paint):
+    rgb, alpha = tuple(color[:3]), color[3] / 255
+    if rgb == (60, 255, 0):
+        base = srgb(paint[0])
+    elif rgb == (255, 0, 175):
+        base = srgb(paint[1])
+    elif rgb in LIGHTS:
+        base = srgb(LIGHTS[rgb])
+    else:
+        base = tuple(c / 255 for c in rgb)
+    m = bpy.data.materials.new("veh")
+    m.use_nodes = True
+    nodes, links = m.node_tree.nodes, m.node_tree.links
+    bs = nodes.get("Principled BSDF")
+    bs.inputs["Roughness"].default_value = 0.45 if rgb in ((60, 255, 0), (255, 0, 175)) else 0.7
+    bs.inputs["Specular IOR Level"].default_value = 0.35
+    bs.inputs["Base Color"].default_value = (*base, 1.0)
+    if tex_path:
+        tex = nodes.new("ShaderNodeTexImage")
+        tex.image = bpy.data.images.load(tex_path, check_existing=True)
+        tex.interpolation = "Linear"
+        mix = nodes.new("ShaderNodeMix")
+        mix.data_type = "RGBA"
+        mix.blend_type = "MULTIPLY"
+        mix.inputs["Factor"].default_value = 1.0
+        mix.inputs["A"].default_value = (*base, 1.0)
+        links.new(tex.outputs["Color"], mix.inputs["B"])
+        links.new(mix.outputs["Result"], bs.inputs["Base Color"])
+        if alpha < 1:
+            mul = nodes.new("ShaderNodeMath")
+            mul.operation = "MULTIPLY"
+            mul.inputs[1].default_value = alpha
+            links.new(tex.outputs["Alpha"], mul.inputs[0])
+            links.new(mul.outputs[0], bs.inputs["Alpha"])
+        else:
+            links.new(tex.outputs["Alpha"], bs.inputs["Alpha"])
+    elif alpha < 1:
+        bs.inputs["Alpha"].default_value = alpha
+    return m
+
+
+def build_vehicle(asset, shared, paint):
+    from gtaLib.dff import dff
+    from asset_catalog_dragon import clumps
+    d = dff()
+    d.load_file(asset["dff"])
+    c = clumps(d)[0]
+    texpaths = {**shared, **{k.lower(): v for k, v in asset.get("textures", {}).items()}}
+    names = [f.name for f in c.frame_list]
+
+    def fm(i):
+        f = c.frame_list[i]
+        rm = f.rotation_matrix
+        local = mathutils.Matrix.Translation(f.position) @ mathutils.Matrix((rm.right, rm.up, rm.at)).transposed().to_4x4()
+        return fm(f.parent) @ local if f.parent >= 0 else local
+
+    parts = []
+    for at in c.atomic_list:
+        name = names[at.frame]
+        if name.endswith("_dam") or name.endswith("_vlo") or name.startswith("extra"):
+            continue
+        g = c.geometry_list[at.geometry]
+        faces = [t for t in g.triangles if len({t.a, t.b, t.c}) == 3]
+        me = bpy.data.meshes.new(name)
+        me.from_pydata([tuple(v) for v in g.vertices], [], [(t.a, t.b, t.c) for t in faces])
+        for mt in g.materials:
+            tp = texpaths.get(mt.textures[0].name.lower()) if mt.textures else None
+            me.materials.append(vehicle_material(mt.color, tp, paint))
+        uv = me.uv_layers.new(name="UVMap")
+        for poly, t in zip(me.polygons, faces):
+            poly.material_index = t.material
+            poly.use_smooth = True
+            if g.uv_layers:
+                for li in poly.loop_indices:
+                    u = g.uv_layers[0][me.loops[li].vertex_index]
+                    uv.data[li].uv = (u.u, 1 - u.v)
+        if name == "wheel":  # one wheel in the file; the game puts a copy on every wheel dummy
+            for dn in WHEELS:
+                if dn in names:
+                    turn = mathutils.Matrix.Rotation(math.pi, 4, "Z") if "_l" in dn else mathutils.Matrix.Identity(4)
+                    parts.append((me, fm(names.index(dn)) @ turn))
+        else:
+            parts.append((me, fm(at.frame)))
+    return parts
+
+
+def load_vehicles(input_path):
+    assets = json.load(open(input_path))["assets"]
+    shared = next((a["textures"] for a in assets if a["model"] == "vehicle"), {})
+    return {int(a["id"].rsplit(":", 1)[1]): a for a in assets if a["model"] != "vehicle"}, shared
+
+
 if S.get("models"):
     M = S["models"]
     load_library(M["input"], M["scout"])
@@ -182,6 +298,13 @@ if S.get("models"):
         place_model(inst["model"], mathutils.Matrix(inst["matrix"]).transposed())
     for p in M.get("props", []):
         place_model(p["model"], mathutils.Matrix.Translation(p["pos"]) @ gta_matrix(p["rot"]))
+    if M.get("vehicles"):
+        vassets, shared = load_vehicles(M["vehicles"])
+        for p in M.get("vehicle_props", []):
+            key = (p["model"], tuple(p.get("paint", ["#b8b8b8", "#b8b8b8"])))
+            if key not in library:
+                library[key] = build_vehicle(vassets[p["model"]], shared, key[1])
+            place_model(key, mathutils.Matrix.Translation(p["pos"]) @ gta_matrix(p["rot"]))
     print("models:", len(library), "instances:", len(M.get("instances", [])), "props:", len(M.get("props", [])))
 
 ray_mat = mat("ray", srgb("#ff3b6b"), 0.4, emit=srgb("#ff3b6b"))

@@ -332,7 +332,9 @@ unsafe fn l_place_model_impl(l: *mut lua_State) -> c_int {
     let (Some(m), Some(x), Some(y), Some(from), Some(yaw)) = (s.num(1), s.num(2), s.num(3), s.num(4), s.num(5)) else { return fail(&s) };
     let lift = s.num(6).unwrap_or(0.0) as f32;
     let f = filter(s.num(7));
-    match shared::with(|w| w.place_model(m as i32, x as f32, y as f32, from as f32, SEARCH_DEPTH, yaw as f32, lift, f)).flatten() {
+    // optional rest rotation (GTA Euler degrees) the model lies in before the yaw, e.g. 90, 0, 0 for a rifle on its side
+    let rest = [s.num(8).unwrap_or(0.0) as f32, s.num(9).unwrap_or(0.0) as f32, s.num(10).unwrap_or(0.0) as f32];
+    match shared::with(|w| w.lay_model(m as i32, x as f32, y as f32, from as f32, SEARCH_DEPTH, yaw as f32, rest, lift, f).map(|l| (l.placement, l.hit))).flatten() {
         Some((p, h)) => {
             for v in [p.pos.x, p.pos.y, p.pos.z, p.rot[0], p.rot[1], p.rot[2], h.normal.x, h.normal.y, h.normal.z] {
                 s.push_num(v as f64);

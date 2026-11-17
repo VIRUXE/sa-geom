@@ -79,13 +79,17 @@ pub struct World {
     pub sources: Vec<String>,
     /// Surface material names by id (from surfinfo.dat), may be empty.
     pub materials: Vec<String>,
-    /// Model name by game id, for models with collision.
+    /// Model name by game id, for models with collision or a shape.
     pub names: HashMap<i32, String>,
     /// Game model id -> index into `models` (the latest definition wins).
     pub by_id: HashMap<i32, u32>,
     /// Top-level BVH over live instances (built by `finish`), and its instance order.
     pub tlas: Vec<Node>,
     pub tlas_order: Vec<u32>,
+    /// Render-mesh hulls of models (see `shape`), their points, and game model id -> index into `shapes`.
+    pub shapes: Vec<crate::shape::ShapeRec>,
+    pub shape_pts: Vec<Vec3>,
+    pub shape_by_id: HashMap<i32, u32>,
 }
 
 /// SA "visible in every interior" area code.

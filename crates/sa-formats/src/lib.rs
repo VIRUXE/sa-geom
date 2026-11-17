@@ -5,6 +5,7 @@
 
 pub mod col;
 pub mod dat;
+pub mod dff;
 pub mod ide;
 pub mod img;
 pub mod ipl;

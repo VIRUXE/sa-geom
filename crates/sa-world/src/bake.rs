@@ -17,6 +17,8 @@ pub struct BakeReport {
     pub no_collision: usize,
     pub placed: usize,
     pub water_polys: usize,
+    /// Models with a render-mesh shape (from their .dff).
+    pub shapes: usize,
     pub script_ipls_skipped: usize,
     /// Model ids placed without collision, with their placement count (most frequent first, top 20).
     pub no_collision_models: Vec<(i32, usize)>,
@@ -105,6 +107,15 @@ pub fn bake(gta: &Path, log: &mut dyn FnMut(&str)) -> Result<(World, BakeReport)
                         }
                     }
                     Err(x) => log(&format!("warning: {}: {x}", e.name)),
+                }
+            } else if e.name.ends_with(".dff") {
+                let stem = e.name.trim_end_matches(".dff");
+                if let Some(&id) = name_to_id.get(stem) {
+                    let data = img.read(e).map_err(|x| x.to_string())?;
+                    if w.add_dff(id, &data) {
+                        rep.shapes += 1;
+                        w.names.entry(id).or_insert_with(|| stem.to_string());
+                    }
                 }
             } else if e.name.ends_with(".ipl") {
                 let data = img.read(e).map_err(|x| x.to_string())?;

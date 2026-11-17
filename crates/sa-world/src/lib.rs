@@ -14,6 +14,7 @@ pub mod io;
 pub mod math;
 pub mod overlay;
 pub mod query;
+pub mod shape;
 pub mod shared;
 pub mod world;
 

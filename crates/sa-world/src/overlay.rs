@@ -19,6 +19,9 @@ pub struct Manifest {
     pub img: Vec<PathEntry>,
     #[serde(default)]
     pub col: Vec<ColEntry>,
+    /// Loose `.dff` files: shapes for placing models by their mesh. `id` as for `col`.
+    #[serde(default)]
+    pub dff: Vec<ColEntry>,
     #[serde(default)]
     pub ipl: Vec<PathEntry>,
     #[serde(default)]
@@ -67,11 +70,13 @@ pub struct OverlayReport {
     pub objects_without_collision: usize,
     pub removed: usize,
     pub files: usize,
+    /// Models given a mesh shape (from .dff files).
+    pub shapes: usize,
 }
 
 impl std::fmt::Display for OverlayReport {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{} files, {} models, {} objects ({} without collision), {} removed", self.files, self.models, self.objects, self.objects_without_collision, self.removed)
+        write!(f, "{} files, {} models, {} shapes, {} objects ({} without collision), {} removed", self.files, self.models, self.shapes, self.objects, self.objects_without_collision, self.removed)
     }
 }
 
@@ -191,6 +196,13 @@ impl World {
                         }
                     }
                 }
+                for e in &m.dff {
+                    for f in expand(base, &e.path) {
+                        if f.extension().is_some_and(|x| x.eq_ignore_ascii_case("dff")) {
+                            self.apply_one(&f, names, rep, e.id)?;
+                        }
+                    }
+                }
                 for e in m.ipl.iter().chain(&m.map).chain(&m.pawn) {
                     for f in expand(base, &e.path) {
                         self.apply_one(&f, names, rep, None)?;
@@ -212,11 +224,28 @@ impl World {
                     let data = img.read(e).map_err(|x| x.to_string())?;
                     self.add_cols(&data, names, rep, None, &e.name)?;
                 }
+                for e in entries.iter().filter(|e| e.name.ends_with(".dff")) {
+                    if let Some(&id) = names.get(e.name.trim_end_matches(".dff")) {
+                        let data = img.read(e).map_err(|x| x.to_string())?;
+                        if self.add_dff(id, &data) {
+                            rep.shapes += 1;
+                        }
+                    }
+                }
                 for e in entries.iter().filter(|e| e.name.ends_with(".ipl")) {
                     let data = img.read(e).map_err(|x| x.to_string())?;
                     if ipl::is_binary(&data) {
                         let list = ipl::parse_binary(&data).map_err(|x| x.to_string())?;
                         self.place_ipl(&list, &e.name, rep);
+                    }
+                }
+            }
+            "dff" => {
+                let stem = path.file_stem().map(|n| n.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
+                if let Some(id) = col_id.or_else(|| names.get(&stem).copied()) {
+                    let data = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
+                    if self.add_dff(id, &data) {
+                        rep.shapes += 1;
                     }
                 }
             }

@@ -180,19 +180,11 @@ impl World {
         self.by_id.get(&id).map(|&m| self.models[m as usize].bounds)
     }
 
-    /// Lay model `id` on the ground under (x, y): its collision bounds give the footprint and how far its origin
-    /// sits above its base. Falls back to a single point (no base offset) for a model without collision.
+    /// Lay model `id` on the ground under (x, y), upright and turned `yaw`: its shape (render mesh, else
+    /// collision bounds) gives the footprint and how far its origin sits above its base. Falls back to a single
+    /// point (no base offset) for a model the world knows nothing about. See [`World::lay_model`] for rest poses.
     pub fn place_model(&self, id: i32, x: f32, y: f32, z_from: f32, depth: f32, yaw: f32, lift: f32, filter: Filter) -> Option<(Placement, Hit)> {
-        match self.model_bounds(id) {
-            Some(b) => {
-                let h = self.rest_box(x, y, z_from, depth, yaw, [b.min.x, b.max.x, b.min.y, b.max.y], filter)?;
-                Some((place(h.pos, h.normal, yaw, lift - b.min.z), h))
-            }
-            None => {
-                let h = self.ground(x, y, z_from, depth, filter)?;
-                Some((place(h.pos, h.normal, yaw, lift), h))
-            }
-        }
+        self.lay_model(id, x, y, z_from, depth, yaw, [0.0; 3], lift, filter).map(|l| (l.placement, l.hit))
     }
 
     /// Water surface height at (x, y), if a water polygon covers it.

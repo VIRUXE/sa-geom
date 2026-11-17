@@ -241,13 +241,14 @@ unsafe extern "C" fn n_place(amx: *mut Amx, p: *const Cell) -> Cell {
 }
 
 /// native bool:SAGeom_PlaceModel(modelid, Float:x, Float:y, Float:zFrom, Float:yaw, &Float:z, &Float:rx, &Float:ry,
-///     &Float:rz, Float:lift = 0.0, interior = 0);
+///     &Float:rz, Float:lift = 0.0, interior = 0, Float:restX = 0.0, Float:restY = 0.0, Float:restZ = 0.0);
 unsafe extern "C" fn n_place_model(amx: *mut Amx, p: *const Cell) -> Cell {
     guard(amx, p, |a| {
         let (Some(m), Some(x), Some(y), Some(from), Some(yaw)) = (a.cell(1), a.float(2), a.float(3), a.float(4), a.float(5)) else { return 0 };
         let lift = a.float_or(10, 0.0);
         let f = filter(a.int_or(11, 0));
-        match shared::with(|w| w.place_model(m, x, y, from, SEARCH_DEPTH, yaw, lift, f)).flatten() {
+        let rest = [a.float_or(12, 0.0), a.float_or(13, 0.0), a.float_or(14, 0.0)];
+        match shared::with(|w| w.lay_model(m, x, y, from, SEARCH_DEPTH, yaw, rest, lift, f).map(|l| (l.placement, l.hit))).flatten() {
             Some((pl, _)) => {
                 a.set_float(6, pl.pos.z);
                 a.set_float(7, pl.rot[0]);
