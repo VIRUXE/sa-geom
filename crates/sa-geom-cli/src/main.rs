@@ -96,6 +96,16 @@ enum Cmd {
         #[command(flatten)]
         world: WorldOpts,
     },
+    /// Which headings boxes fit in on the ground, from stdin, one JSON object per line:
+    /// {"x","y","z","boxes":[[length,width,height],...],"headings"?:16,"lift"?:0.03,"step"?:0.05,"interior"?}. The ground is found
+    /// as `batch` finds it (from z + --above); each box stands on it, centred on the point, tilted to the surface,
+    /// its length along the heading. Out: the ground and, per box, a bitmask of the headings k*360/N that are clear.
+    Clearance {
+        #[arg(long, default_value_t = 1.0)]
+        above: f32,
+        #[command(flatten)]
+        world: WorldOpts,
+    },
     /// World statistics, or the objects around a point.
     Info {
         /// List the objects whose bounds come within RADIUS (default 5) of X Y Z.
@@ -250,7 +260,9 @@ fn ground_json(w: &World, q: &GroundQ) -> Value {
             // body clearance: shrink by `margin` (mirrors and trim stick out of the body), ignore the bottom fifth (at
             // most 0.4 m: wheels, kerbs, the ground)
             let floor = l.rest.map(|r| (r.size.z * 0.2).clamp(0.02, 0.4)).unwrap_or(0.0);
-            blocked = Some(w.obstruction(&l, q.margin, floor, f));
+            // a face rising less than this above the body's bottom is a kerb or a step, not an obstacle
+            let step = l.rest.map(|r| (r.size.z * 0.2).clamp(0.05, 0.3)).unwrap_or(0.05);
+            blocked = Some(w.obstruction(&l, q.margin, floor, step, f));
             (l.hit, l.placement)
         }),
         (None, Some((fw, fd))) => w.footprint(q.x, q.y, q.from, q.depth, q.yaw, fw, fd, f).map(|h| (h, place(h.pos, h.normal, q.yaw, q.lift))),
@@ -267,7 +279,7 @@ fn ground_json(w: &World, q: &GroundQ) -> Value {
                 v["shape"] = mj["shape"].clone();
                 v["gap"] = json!(gap.map(r3));
                 v["blocked"] = match blocked.flatten() {
-                    Some(b) => json!({ "model": b.model, "name": w.names.get(&b.model).cloned().unwrap_or_default(), "at": [r3(b.at.x), r3(b.at.y), r3(b.at.z)] }),
+                    Some(b) => json!({ "model": b.model, "name": w.names.get(&b.model).cloned().unwrap_or_default(), "at": [r3(b.at.x), r3(b.at.y), r3(b.at.z)], "part": b.part }),
                     None => Value::Null,
                 };
                 v["base"] = mj["base"].clone();
@@ -381,6 +393,56 @@ fn main() {
                     }
                     writeln!(out, "{}", v).unwrap();
                 }
+            }
+        }
+        Cmd::Clearance { above, world } => {
+            let w = load(&world);
+            let stdin = std::io::stdin();
+            let mut out = std::io::BufWriter::new(std::io::stdout().lock());
+            for line in stdin.lock().lines() {
+                let line = line.unwrap_or_else(|e| die(e));
+                let line = line.trim();
+                if line.is_empty() || line.starts_with('#') {
+                    continue;
+                }
+                let v: Value = serde_json::from_str(line).unwrap_or_else(|e| die(format!("bad JSON line: {e}")));
+                let g = |k: &str| v.get(k).and_then(|x| x.as_f64()).map(|x| x as f32);
+                let (x, y) = (g("x").unwrap_or_else(|| die("missing x")), g("y").unwrap_or_else(|| die("missing y")));
+                let from = g("z").map(|z| z + above).unwrap_or(1000.0);
+                let f = Filter::interior(g("interior").map(|i| i as i32).unwrap_or(world.interior));
+                let n = g("headings").map(|n| n as u32).unwrap_or(16).clamp(1, 32);
+                let lift = g("lift").unwrap_or(0.03);
+                let step = g("step").unwrap_or(0.05);
+                let boxes: Vec<[f32; 3]> = v.get("boxes").and_then(|b| b.as_array()).map(|a| a.iter().filter_map(|b| {
+                    let d: Vec<f32> = b.as_array()?.iter().filter_map(|x| x.as_f64()).map(|x| x as f32).collect();
+                    d.try_into().ok()
+                }).collect()).unwrap_or_default();
+                let Some(hit) = w.ground(x, y, from, g("depth").unwrap_or(1200.0), f) else {
+                    writeln!(out, "{}", json!({ "hit": false, "input": v })).unwrap();
+                    continue;
+                };
+                let mut masks = vec![0u32; boxes.len()];
+                for k in 0..n {
+                    let yaw = k as f32 * 360.0 / n as f32;
+                    let p = place(hit.pos, hit.normal, yaw, 0.0);
+                    // biggest first: a heading clear for a box is clear for every box inside it
+                    let mut order: Vec<usize> = (0..boxes.len()).collect();
+                    order.sort_by(|a, b| (boxes[*b][0] * boxes[*b][1] * boxes[*b][2]).total_cmp(&(boxes[*a][0] * boxes[*a][1] * boxes[*a][2])));
+                    let mut clear: Vec<usize> = Vec::new();
+                    for &i in &order {
+                        let [l, wd, h] = boxes[i];
+                        let inside = clear.iter().any(|&j| boxes[j][0] >= l && boxes[j][1] >= wd && boxes[j][2] >= h);
+                        let free = inside || {
+                            let half = v3(wd * 0.5, l * 0.5, h * 0.5);
+                            w.box_clear(hit.pos + p.up * (lift + h * 0.5), p.right, p.forward, p.up, half, Some(step), f).is_none()
+                        };
+                        if free {
+                            masks[i] |= 1 << k;
+                            clear.push(i);
+                        }
+                    }
+                }
+                writeln!(out, "{}", json!({ "hit": true, "z": r3(hit.pos.z), "nx": r3(hit.normal.x), "ny": r3(hit.normal.y), "nz": r3(hit.normal.z), "masks": masks, "input": v })).unwrap();
             }
         }
         Cmd::Info { at, radius, world } => {

@@ -90,6 +90,8 @@ pub struct World {
     pub shapes: Vec<crate::shape::ShapeRec>,
     pub shape_pts: Vec<Vec3>,
     pub shape_by_id: HashMap<i32, u32>,
+    /// Helicopter id -> index into `shapes` of its main rotor (kind KIND_ROTOR).
+    pub rotor_by_id: HashMap<i32, u32>,
 }
 
 /// SA "visible in every interior" area code.

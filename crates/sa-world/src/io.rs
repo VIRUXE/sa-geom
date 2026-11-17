@@ -124,7 +124,11 @@ impl World {
         w.shapes = c.pod()?;
         w.shape_pts = c.pod()?;
         for (i, s) in w.shapes.iter().enumerate() {
-            w.shape_by_id.insert(s.id, i as u32);
+            if s.kind == crate::shape::KIND_ROTOR {
+                w.rotor_by_id.insert(s.id, i as u32);
+            } else {
+                w.shape_by_id.insert(s.id, i as u32);
+            }
         }
         for (i, m) in w.models.iter().enumerate() {
             w.by_id.insert(m.id, i as u32);

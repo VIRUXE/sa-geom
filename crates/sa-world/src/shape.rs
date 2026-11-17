@@ -13,6 +13,8 @@ use bytemuck::{Pod, Zeroable};
 pub const KIND_OBJECT: u32 = 0;
 pub const KIND_VEHICLE: u32 = 1;
 pub const KIND_WEAPON: u32 = 2;
+/// A helicopter's main rotor, kept apart from its body: it spins, so it is tested as a disc at its own height.
+pub const KIND_ROTOR: u32 = 3;
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Pod, Zeroable)]
@@ -83,6 +85,9 @@ pub struct Laid {
     pub gap: f32,
     /// Where the shape came from: "mesh", "collision" or "point" (nothing known: origin on the ground).
     pub source: &'static str,
+    pub model: i32,
+    /// The rest rotation it was laid in (GTA Euler degrees).
+    pub rest_rot: [f32; 3],
 }
 
 /// Shape kind by game model id: vehicles 400-611, weapons 321-372, everything else an object.
@@ -98,16 +103,32 @@ pub fn kind_of(id: i32) -> u32 {
 /// variants, which sit where the normal parts are, a weapon's muzzle flash (`gunflash`, shown only when firing) and a
 /// vehicle's optional extras (`extra1`..., shown at random).
 pub fn dff_points(data: &[u8]) -> Vec<Vec3> {
-    let Ok(c) = sa_formats::dff::parse(data) else { return Vec::new() };
-    c.points(|n| !n.contains("_vlo") && !n.contains("_dam") && !n.starts_with("gunflash") && !n.starts_with("extra")).into_iter().map(Vec3::from_arr).collect()
+    dff_parts(data).0
+}
+
+/// A main rotor's frame (`moving_rotor`, `static_rotor`; the tail rotors end in 2).
+fn main_rotor(name: &str) -> bool {
+    matches!(name, "moving_rotor" | "static_rotor")
+}
+
+/// Render-mesh points of a `.dff` as (body, main rotor): the rotor apart so a helicopter's body is its fuselage.
+pub fn dff_parts(data: &[u8]) -> (Vec<Vec3>, Vec<Vec3>) {
+    let Ok(c) = sa_formats::dff::parse(data) else { return (Vec::new(), Vec::new()) };
+    let shown = |n: &str| !n.contains("_vlo") && !n.contains("_dam") && !n.starts_with("gunflash") && !n.starts_with("extra");
+    let body = c.points(|n| shown(n) && !main_rotor(n)).into_iter().map(Vec3::from_arr).collect();
+    let rotor = c.points(|n| shown(n) && main_rotor(n)).into_iter().map(Vec3::from_arr).collect();
+    (body, rotor)
 }
 
 impl World {
     /// Add the shape of model `id` from its `.dff` bytes. Returns false when the clump has no usable mesh.
     pub fn add_dff(&mut self, id: i32, data: &[u8]) -> bool {
-        let pts = dff_points(data);
+        let (body, rotor) = dff_parts(data);
         let n = self.shapes.len();
-        self.add_shape(id, kind_of(id), &pts);
+        self.add_shape(id, kind_of(id), &body);
+        if kind_of(id) == KIND_VEHICLE && !rotor.is_empty() {
+            self.add_shape(id, KIND_ROTOR, &rotor);
+        }
         self.shapes.len() > n
     }
 
@@ -120,7 +141,25 @@ impl World {
         self.shape_pts.extend(h);
         let idx = self.shapes.len() as u32;
         self.shapes.push(rec);
-        self.shape_by_id.insert(id, idx);
+        if kind == KIND_ROTOR {
+            self.rotor_by_id.insert(id, idx);
+        } else {
+            self.shape_by_id.insert(id, idx);
+        }
+    }
+
+    /// The main rotor of helicopter `id` as a disc in the model's own frame: centre (x, y), radius, lowest and
+    /// highest z of the blades.
+    pub fn rotor_disc(&self, id: i32) -> Option<(Vec3, f32, f32, f32)> {
+        let s = self.shapes[*self.rotor_by_id.get(&id)? as usize];
+        let pts = &self.shape_pts[s.start as usize..(s.start + s.count) as usize];
+        let mut b = Aabb::EMPTY;
+        for p in pts {
+            b.grow(*p);
+        }
+        let c = v3((b.min.x + b.max.x) * 0.5, (b.min.y + b.max.y) * 0.5, 0.0);
+        let r = pts.iter().map(|p| ((p.x - c.x).powi(2) + (p.y - c.y).powi(2)).sqrt()).fold(0.0f32, f32::max);
+        Some((c, r, b.min.z, b.max.z))
     }
 
     /// The hull points and kind of model `id`'s render mesh, if known.
@@ -161,7 +200,7 @@ impl World {
         // whole rotation = surface basis (right, forward, up) * rest rotation
         let col = |v: Vec3| p.right * v.x + p.forward * v.y + p.up * v.z;
         p.rot = euler::basis_euler(col(m.x), col(m.y), col(m.z));
-        Some(Laid { placement: p, hit, rest: r, gap, source })
+        Some(Laid { placement: p, hit, rest: r, gap, source, model: id, rest_rot: rest })
     }
 }
 
@@ -193,6 +232,18 @@ fn tri_box(v: [Vec3; 3], h: Vec3) -> bool {
     !sep(e[0].cross(e[1]))
 }
 
+/// Is a triangle (in box space, box half extents `h`) ground rather than an obstacle? Facing up or down (a floor,
+/// a kerb top, a slope) and below the box's middle; or wall-like but topping out within `step` of the box's bottom.
+fn ground_like(t: [Vec3; 3], h: Vec3, step: f32) -> bool {
+    let n = (t[1] - t[0]).cross(t[2] - t[0]);
+    let len = n.len();
+    let top = t[0].z.max(t[1].z).max(t[2].z);
+    if len > 1e-9 && (n.z / len).abs() > 0.55 {
+        return (t[0].z + t[1].z + t[2].z) / 3.0 < 0.0;
+    }
+    top < -h.z + step
+}
+
 /// What a laid model's body runs into.
 #[derive(Debug, Clone, Copy)]
 pub struct Blocked {
@@ -200,13 +251,15 @@ pub struct Blocked {
     pub model: i32,
     /// World point (a vertex or centre of what was hit) for reporting.
     pub at: Vec3,
+    /// What ran into it: "body" or "rotor".
+    pub part: &'static str,
 }
 
 impl World {
     /// Does model `id`, laid as `l` (from [`World::lay_model`]), run into any collision? The body tested is the
     /// model's box in its pose, shrunk by `margin` on every side and with its bottom `floor` metres up, so the ground
     /// it stands on, kerbs and bumps under it do not count while walls, poles, fences, trunks and roofs do.
-    pub fn obstruction(&self, l: &Laid, margin: f32, floor: f32, filter: Filter) -> Option<Blocked> {
+    pub fn obstruction(&self, l: &Laid, margin: f32, floor: f32, step: f32, filter: Filter) -> Option<Blocked> {
         let r = l.rest?;
         let p = &l.placement;
         let (lo, hi) = (v3(r.rect[0] + margin, r.rect[2] + margin, -r.base + floor), v3(r.rect[1] - margin, r.rect[3] - margin, r.size.z - r.base - margin));
@@ -215,8 +268,30 @@ impl World {
         }
         let c = (lo + hi) * 0.5;
         let h = (hi - lo) * 0.5;
-        // box centre in the world, and world <-> box space
         let centre = p.pos + p.right * c.x + p.forward * c.y + p.up * c.z;
+        if let Some(b) = self.box_clear(centre, p.right, p.forward, p.up, h, Some(step), filter) {
+            return Some(b);
+        }
+        // a helicopter's main rotor: a thin slab at blade height, the square inside the disc it spins (anything there
+        // is hit by a blade; only the rim between the square's corners goes untested). No ground rule up there.
+        let (dc, radius, z0, z1) = self.rotor_disc(l.model)?;
+        let rot = euler::object_affine(Vec3::ZERO, l.rest_rot);
+        let lc = rot.vector(v3(dc.x, dc.y, (z0 + z1) * 0.5));
+        let half = v3(radius * std::f32::consts::FRAC_1_SQRT_2 - margin, radius * std::f32::consts::FRAC_1_SQRT_2 - margin, (z1 - z0) * 0.5 + 0.1);
+        if half.x <= 0.0 {
+            return None;
+        }
+        let centre = p.pos + p.right * lc.x + p.forward * lc.y + p.up * lc.z;
+        self.box_clear(centre, p.right, p.forward, p.up, half, None, filter).map(|b| Blocked { part: "rotor", ..b })
+    }
+
+    /// The first obstacle inside a box: centre, orthonormal axes (right, forward, up) and half extents `h` along them.
+    /// Ground is not an obstacle: a surface facing up or down counts only above the box's mid-height (a low roof, a
+    /// table top), and a wall-like face only where it rises more than `step` above the box's bottom (so kerbs, steps,
+    /// pavement edges and bumps of uneven ground under a body or an item do not count). None when the box is clear.
+    /// `step` None: nothing is ground, every surface in the box counts.
+    pub fn box_clear(&self, centre: Vec3, right: Vec3, forward: Vec3, up: Vec3, h: Vec3, step: Option<f32>, filter: Filter) -> Option<Blocked> {
+        let p = Placement { pos: centre, right, forward, up, rot: [0.0; 3] };
         let to_box = |w: Vec3| {
             let d = w - centre;
             v3(d.dot(p.right), d.dot(p.forward), d.dot(p.up))
@@ -249,7 +324,8 @@ impl World {
                     }
                     for t in &tris[f as usize..(f + n) as usize] {
                         let w = [inst.xf.point(t.a), inst.xf.point(t.b), inst.xf.point(t.c)];
-                        if tri_box([to_box(w[0]), to_box(w[1]), to_box(w[2])], h) {
+                        let l = [to_box(w[0]), to_box(w[1]), to_box(w[2])];
+                        if tri_box(l, h) && !step.is_some_and(|st| ground_like(l, h, st)) {
                             found = Some((w[0] + w[1] + w[2]) * (1.0 / 3.0));
                             return;
                         }
@@ -268,7 +344,7 @@ impl World {
                 }
             }
             if let Some(at) = found {
-                return Some(Blocked { model: m.id, at });
+                return Some(Blocked { model: m.id, at, part: "body" });
             }
         }
         None

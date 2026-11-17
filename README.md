@@ -154,7 +154,10 @@ as most scripts do it. Right: <code>PlaceModel</code>.</sub>
 - **`*Ground`** gives you the raw height and normal to use however you like.
 - `ground --model` also says whether the model fits: `blocked` names the first object reaching more than `--margin`
   (0.15 m) into its box in that pose (a wall, fence, pole, low roof; the bottom fifth is ignored so the ground,
-  kerbs and wheels don't count), and `gap` is how far it is propped above the ground under its origin.
+  kerbs and wheels don't count; ground-like surfaces below the body's middle and faces lower than a step never
+  count), and `gap` is how far it is propped above the ground under its origin. A helicopter's main rotor is kept
+  apart from its body: the body box is the fuselage, and the spinning disc is tested as a thin slab at blade height
+  (`"part": "rotor"`), so a lamp post under the blades doesn't count but one reaching into them does.
 - `sa-geom model ID... [--rest RX,RY,RZ]` tells you what sa-geom knows about a model: its kind (object,
   weapon, vehicle), where its shape comes from, its size and how high its origin sits above its lowest point.
 
@@ -165,6 +168,7 @@ sa-geom ground X Y [--from Z] [--yaw D] [--lift M] [--model ID [--rest RX,RY,RZ]
 sa-geom model  ID... [--rest RX,RY,RZ]                                   # kind, shape, size, origin height
 sa-geom ray    X1 Y1 Z1 X2 Y2 Z2
 sa-geom batch  [--format jsonl|csv] [--above M] < points
+sa-geom clearance [--above M] < points                                  # which headings boxes fit in, per point
 sa-geom info   [--at X Y Z --radius R]
 sa-geom export --min X Y Z --max X Y Z [--origin X Y Z] -o region.obj   # collision as OBJ, grouped by surface
 sa-geom placements --gta DIR --min X Y Z --max X Y Z [--margin M]      # every map placement in a box, as JSON
@@ -202,6 +206,16 @@ something the world doesn't have, under water, or too steep.
 $ python3 examples/spawn-points/fix_spawns.py vehicles.csv --models 400,422,461,468 --flip \
       --overlay mymaps.toml -o placements.jsonl --report check.csv
 2017 points, 63669 placements, 145 points flagged
+```
+
+`sa-geom clearance` answers the question for anything placed at random later: for a point and a few box sizes
+(say small, medium and long items) it tests 16 headings against the collision around and returns, per box, a bitmask
+of the headings that are clear. Store the masks with the point and the spawner picks a random heading among the
+clear ones, so a rifle never ends up through a wall:
+
+```console
+$ echo '{"x":2099.46,"y":-1052.49,"z":27.36,"boxes":[[0.5,0.5,0.4],[1.0,0.5,0.5],[1.8,0.7,0.7]],"lift":0.08}' | sa-geom clearance
+{"hit":true,"z":27.3692,"nx":0.1311, ... ,"masks":[65535,1542,1028], ...}
 ```
 
 Loot scattered around a point (item *i* of *n* at angle *i*·360/*n*, a few tens of centimetres out) has a small,
