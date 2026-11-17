@@ -1,0 +1,8 @@
+[package]
+name = "sa-formats"
+description = "Parsers for GTA San Andreas map and collision files (IMG, DAT, IDE, IPL, COL) and map exports (MTA .map, SA-MP Pawn)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
