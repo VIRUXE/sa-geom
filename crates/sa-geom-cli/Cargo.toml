@@ -1,0 +1,18 @@
+[package]
+name = "sa-geom-cli"
+description = "Command-line ground height, raycast and slope placement queries against GTA San Andreas collision"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "sa-geom"
+path = "src/main.rs"
+
+[dependencies]
+sa-formats.workspace = true
+sa-world.workspace = true
+clap = { version = "4", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+zstd = "0.13"
