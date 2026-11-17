@@ -3,6 +3,10 @@
 **GTA San Andreas world collision for servers and tools: ground height, raycasts, surface normals and objects
 placed flush on slopes, with no game client and no game files.**
 
+![204 crates and pallet stacks dropped on a Vinewood hillside by sa-geom, each resting on its base and tilted to the ground under it](docs/images/hero.jpg)
+<sub>204 crates dropped on a grid over a Vinewood hillside (25° average slope). Each one is a single
+<code>sa-geom ground --model ID --yaw D</code> query, and the pink lines show some of the rays.</sub>
+
 One Rust core, three ways to use it:
 
 | | Target | What you get |
@@ -47,6 +51,10 @@ $ sa-geom ground -2300 -1700 --model 1271 --yaw 45
 
 sa-geom does real triangle raycasts (bridges, tunnels, several floors, interiors), returns the normal, the
 surface material and the model hit, and turns all of that into the exact object rotation each server expects.
+
+![Gant Bridge cut open: three downward rays from the same x, y hit the top of the bridge, the road deck and the sea floor](docs/images/bridge.jpg)
+<sub>The Gant Bridge cut open at x = −2680. Three rays at the same spot, started at different heights, find
+three different surfaces. A heightmap only ever knows the top one.</sub>
 
 ## Install
 
@@ -127,6 +135,10 @@ native bool:SAGeom_AddOverlay(const path[]);   // relative to scriptfiles/
 
 ### Placing things well
 
+![A shipping container on a 30 degree slope: placed at ground height and flat it sinks into the hill; placed by sa-geom it rests on the slope](docs/images/compare.jpg)
+<sub>The same 3 × 7 m container (model 2934) on a 30° slope. Left: its origin at the ground height and no tilt,
+as most scripts do it. Right: <code>PlaceModel</code>.</sub>
+
 - **`*PlaceModel`** is usually what you want. It reads the model's collision bounds, samples the ground under
   the corners of its base, tilts it to the plane through them, and lifts its origin by however far the origin
   sits above the base. A long crate across a ridge or a dip rests on it instead of sinking in or floating, and
@@ -143,6 +155,8 @@ sa-geom ground X Y [--from Z] [--yaw D] [--lift M] [--model ID | --footprint W,D
 sa-geom ray    X1 Y1 Z1 X2 Y2 Z2
 sa-geom batch  [--format jsonl|csv] [--above M] < points
 sa-geom info   [--at X Y Z --radius R]
+sa-geom export --min X Y Z --max X Y Z [--origin X Y Z] -o region.obj   # collision as OBJ, grouped by surface
+sa-geom placements --gta DIR --min X Y Z --max X Y Z [--margin M]      # every map placement in a box, as JSON
 sa-geom bake   --gta DIR -o world.sagw.zst
 ```
 
@@ -215,6 +229,18 @@ Placement rotations go through the game's own quaternion convention, ported from
 - **Bounds come from collision.** A model without collision has no bounds to place by.
 - **The built-in world is the PC 1.0 map.** For a modded map, bake your own with `sa-geom bake --gta DIR` and point
   `--world` (CLI) or the `SAGEOM_WORLD` environment variable (module and plugin) at it.
+
+## Renders
+
+The images in this README are made by [`docs/render`](docs/render) from real sa-geom queries. The scenery and
+the crates are the game's own models and textures, extracted with
+[gta-scout](https://github.com/Dryxio/gta-scout) and DragonFF and rendered in Blender (Cycles), so they need a
+local copy of the game:
+
+```console
+$ cargo build --release -p sa-geom-cli
+$ GTA_SA="/path/to/GTA San Andreas" GTA_SCOUT=/path/to/gta-scout python3 docs/render/make.py [hero compare bridge] [--preview]
+```
 
 ## Building
 

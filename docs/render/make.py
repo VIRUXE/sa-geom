@@ -3,7 +3,7 @@
     python3 docs/render/make.py [scene ...] [--preview]
 
 Needs a release build of the CLI (cargo build --release -p sa-geom-cli) and `blender` on PATH.
-Writes docs/images/<scene>.png.
+Writes docs/images/<scene>.jpg (intermediate PNGs and scene files go to target/renders/).
 """
 
 import json
@@ -43,8 +43,8 @@ def rel(p, o):
     return [p[0] - o[0], p[1] - o[1], p[2] - o[2]]
 
 
-GTA = os.environ.get("GTA_SA", "/gta/sa/gamefiles/GTA San Andreas")
-SCOUT = os.environ.get("GTA_SCOUT", "/gta/sa/gta-scout")
+GTA = os.environ.get("GTA_SA", "")
+SCOUT = os.environ.get("GTA_SCOUT", "")
 
 
 def visual(name, o, lo, hi, margin=150, props=()):
@@ -65,6 +65,17 @@ def visual(name, o, lo, hi, margin=150, props=()):
     return {"input": os.path.join(adir, "input.json"), "scout": SCOUT, "instances": places}
 
 
+def publish(png):
+    """Copy a finished render into docs/images as a JPEG (README images stay small)."""
+    if PREVIEW:
+        return
+    from PIL import Image
+    os.makedirs(OUT, exist_ok=True)
+    dst = os.path.join(OUT, os.path.splitext(os.path.basename(png))[0] + ".jpg")
+    Image.open(png).convert("RGB").save(dst, quality=88, optimize=True, progressive=True)
+    print("published", dst)
+
+
 def render(name, scene):
     os.makedirs(WORK, exist_ok=True)
     if PREVIEW:
@@ -72,7 +83,7 @@ def render(name, scene):
         scene["size"] = [s // 2 for s in scene.get("size", [1600, 900])]
     sp = os.path.join(WORK, f"{name}.json")
     json.dump(scene, open(sp, "w"))
-    out = os.path.join(WORK if PREVIEW else OUT, f"{name}.png")
+    out = os.path.join(WORK, f"{name}.png")
     r = subprocess.run(["blender", "-b", "--factory-startup", "--python-exit-code", "1", "-P", os.path.join(ROOT, "docs", "render", "scene.py"), "--", sp, out], capture_output=True, text=True)
     if "@@RENDERED" not in r.stdout:
         print(r.stdout[-3000:], r.stderr[-3000:])
@@ -142,7 +153,7 @@ def hero():
         "models": models, "rays": rays,
         "camera": {"loc": cam, "target": [dx * 4, dy * 4, -6], "lens": 30},
         "sun": {"rot": [48, 0, math.degrees(math.atan2(py, px)) + 120], "energy": 3.4},
-        "size": [1600, 900], "samples": 96,
+        "size": [1440, 810], "samples": 40, "sky": "#a9c8e6",
     })
 
 
@@ -166,7 +177,7 @@ def compare():
     l = math.hypot(nx, ny) or 1
     sx, sy = -ny / l, nx / l
     cam = {"loc": [sx * 20 + nx / l * 6, sy * 20 + ny / l * 6, 7.5], "target": [0, 0, 0.6], "lens": 40}
-    base = {"camera": cam, "sun": {"rot": [40, 0, math.degrees(math.atan2(sy, sx)) + 140], "energy": 3.6}, "size": [900, 760], "samples": 128, "wire_thickness": 0.02}
+    base = {"camera": cam, "sun": {"rot": [40, 0, math.degrees(math.atan2(sy, sx)) + 140], "energy": 3.6}, "size": [900, 760], "samples": 48, "sky": "#a9c8e6"}
     a = render("compare_naive", {**base, "models": {**models, "props": [naive]}})
     b = render("compare_sageom", {**base, "models": {**models, "props": [good]}, "rays": [{"from": [hit[0], hit[1], hit[2] + 6], "to": hit, "radius": 0.035, "dot": 0.12, "normal": [p["nx"], p["ny"], p["nz"]], "normal_len": 1.6}]})
     from PIL import Image, ImageDraw, ImageFont
@@ -181,8 +192,9 @@ def compare():
         f = ImageFont.load_default()
     d.text((24, 18), "origin at ground z, flat", fill=(240, 120, 120), font=f)
     d.text((A.width + 36, 18), "sa-geom PlaceModel", fill=(110, 220, 205), font=f)
-    out = os.path.join(WORK if PREVIEW else OUT, "compare.png")
+    out = os.path.join(WORK, "compare.png")
     img.save(out)
+    publish(out)
     print("wrote", out)
 
 
@@ -199,13 +211,49 @@ def bridge():
     print("bridge hits:", [round(h["z"], 1) for h in hits])
     return render("bridge", {
         "models": models, "rays": rays, "water": 0.0, "water_size": 900, "water_depth": 140, "water_alpha": 0.35,
-        "camera": {"loc": [300, 0, -6], "target": [0, 0, -6], "ortho": 300, "clip_start": 299.5, "clip_end": 900},
-        "sun": {"rot": [55, 0, 70], "energy": 3.2}, "wire_thickness": 0.18,
-        "size": [1600, 900], "samples": 96,
-    })
+        "camera": {"loc": [300, 0, ZC], "target": [0, 0, ZC], "ortho": ORTHO, "clip_start": 299.5, "clip_end": 900},
+        "sun": {"rot": [55, 0, 70], "energy": 3.2}, "sky": "#a9c8e6",
+        "size": [1440, 810], "samples": 40,
+    }), [(yy - y, h["z"], z0) for (yy, z0), h in zip(starts, hits)]
 
 
-SCENES = {"hero": hero, "compare": compare, "bridge": bridge}
+ZC, ORTHO = 0.0, 330.0
+
+
+def bridge_labels():
+    path, pts = bridge()
+    from PIL import Image, ImageDraw, ImageFont
+    img = Image.open(path).convert("RGB")
+    W, H = img.size
+    k = W / ORTHO
+    to_px = lambda yy, z: (W / 2 + yy * k, H / 2 - (z - ZC) * k)
+    d = ImageDraw.Draw(img)
+    try:
+        f = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 22)
+    except OSError:
+        f = ImageFont.load_default()
+    texts = ["ray from the sky: top of the bridge", "ray from under it: the road deck", "ray from below the deck: the sea floor"]
+    for (yy, z, z0), t in zip(pts, texts):
+        px, py = to_px(yy, z)
+        label = f"{t}  z = {z:.1f}"
+        tw = d.textlength(label, font=f)
+        x0 = px + 18
+        y0 = py - 14 if z > 0 else py - 34
+        d.rounded_rectangle([x0 - 8, y0 - 4, x0 + tw + 8, y0 + 28], radius=6, fill=(20, 22, 26))
+        d.text((x0, y0), label, fill=(255, 255, 255), font=f)
+    px, py = to_px(0, 0)
+    d.rounded_rectangle([W - 260, py + 6, W - 16, py + 38], radius=6, fill=(20, 22, 26))
+    d.text((W - 250, py + 9), "water  z = 0.0", fill=(140, 200, 255), font=f)
+    img.save(path)
+    print("labelled", path)
+    publish(path)
+
+
+def hero_publish():
+    publish(hero())
+
+
+SCENES = {"hero": hero_publish, "compare": compare, "bridge": bridge_labels}
 
 if __name__ == "__main__":
     names = [a for a in sys.argv[1:] if not a.startswith("--")] or list(SCENES)
