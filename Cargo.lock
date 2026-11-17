@@ -277,6 +277,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "sa-geom-mta"
+version = "0.1.0"
+dependencies = [
+ "sa-world",
+]
+
+[[package]]
 name = "sa-world"
 version = "0.1.0"
 dependencies = [

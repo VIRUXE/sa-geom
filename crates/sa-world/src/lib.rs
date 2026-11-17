@@ -14,6 +14,7 @@ pub mod io;
 pub mod math;
 pub mod overlay;
 pub mod query;
+pub mod shared;
 pub mod world;
 
 pub use math::{v3, Vec3};
