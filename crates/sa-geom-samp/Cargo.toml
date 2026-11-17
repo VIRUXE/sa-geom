@@ -4,6 +4,10 @@ description = "SA-MP / open.mp plugin: ground height, raycasts and slope placeme
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
 
 [lib]
 name = "sageom"

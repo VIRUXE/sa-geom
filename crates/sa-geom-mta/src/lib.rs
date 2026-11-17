@@ -28,6 +28,11 @@ const SEARCH_DEPTH: f32 = 1200.0;
 static MANAGER: AtomicPtr<c_void> = AtomicPtr::new(std::ptr::null_mut());
 
 type PrintfFn = unsafe extern "C" fn(*mut c_void, *const c_char, ...);
+// C++ member functions: `this` first. 32-bit MSVC uses thiscall for non-variadic members; variadic ones (Printf)
+// and every other platform pass `this` like a normal first argument.
+#[cfg(all(windows, target_arch = "x86"))]
+type RegisterFn = unsafe extern "thiscall" fn(*mut c_void, *mut lua_State, *const c_char, lua::lua_CFunction) -> bool;
+#[cfg(not(all(windows, target_arch = "x86")))]
 type RegisterFn = unsafe extern "C" fn(*mut c_void, *mut lua_State, *const c_char, lua::lua_CFunction) -> bool;
 
 unsafe fn vtable_entry(slot: usize) -> Option<*const c_void> {

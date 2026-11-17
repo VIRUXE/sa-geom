@@ -4,6 +4,10 @@ description = "GTA San Andreas collision world: raycasts, ground height and norm
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
 
 [features]
 default = ["embedded"]

@@ -54,7 +54,7 @@ enum Cmd {
         footprint: Option<(f32, f32)>,
         /// Place this model: its collision bounds give the footprint and lift its base (not its origin) onto
         /// the ground.
-        #[arg(long)]
+        #[arg(long, allow_hyphen_values = true)]
         model: Option<i32>,
         #[command(flatten)]
         world: WorldOpts,
@@ -129,7 +129,7 @@ fn load(o: &WorldOpts) -> World {
 }
 
 fn r3(v: f32) -> f64 {
-    ((v as f64) * 10000.0).round() / 10000.0
+    ((v as f64) * 10000.0).round() / 10000.0 + 0.0
 }
 
 fn hit_json(w: &World, h: &Hit) -> Value {

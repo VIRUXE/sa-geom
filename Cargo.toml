@@ -6,6 +6,11 @@ members = ["crates/sa-formats", "crates/sa-world", "crates/sa-geom-cli", "crates
 version = "0.1.0"
 edition = "2021"
 license = "Unlicense"
+repository = "https://github.com/VIRUXE/sa-geom"
+homepage = "https://github.com/VIRUXE/sa-geom"
+keywords = ["gta", "san-andreas", "mta", "samp", "collision"]
+categories = ["game-development"]
+readme = "README.md"
 
 [workspace.dependencies]
 sa-formats = { path = "crates/sa-formats" }

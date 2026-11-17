@@ -1,0 +1,4 @@
+<meta>
+    <info author="sa-geom" type="script" name="sa-geom example" version="1.0" description="Drops crates onto the ground in front of you, tilted to the slope." />
+    <script src="server.lua" type="server" />
+</meta>

@@ -1,0 +1,43 @@
+# sa-geom overlay manifest: your own maps and models on top of the built-in San Andreas world.
+#
+#   CLI:     sa-geom ground 2495 -1687 --overlay examples/overlay.toml
+#   MTA:     sageomAddOverlay("path/to/overlay.toml")          -- relative to the server root
+#   SA-MP:   SAGeom_AddOverlay("overlay.toml");                 // relative to scriptfiles/
+#
+# Every path is relative to this file. A path can be a file, a directory (every file in it, recursively) or a
+# name with * wildcards (prefix with **/ to search subdirectories). Sections are applied in this order: model
+# names (ide), collision (img, col), placements (ipl, map, pawn), then removals.
+
+# Model id <-> name definitions for custom models, so their collision files can be matched by name.
+# [[ide]]
+# path = "models/SAMP.ide"
+
+# IMG archives: every .col entry in them (matched to ids by name), and any binary .ipl placements.
+# SA-MP 0.3.7+ objects (ids 18631-19999+): point these at the files from the SA-MP client install.
+# [[img]]
+# path = "models/SAMPCOL.img"
+
+# Loose collision files. `id` assigns that model id to every model in the file (single-model .col files whose
+# name no IDE knows); otherwise names are matched through the IDEs.
+# [[col]]
+# path = "mymodels/"
+# [[col]]
+# path = "props/bigramp.col"
+# id = 19999
+
+# Placements.
+# [[ipl]]
+# path = "maps/mymap.ipl"
+# [[map]]
+# path = "maps/**/*.map"             # MTA maps: <object> and <removeWorldObject>
+# [[pawn]]
+# path = "maps/*.pwn"                # CreateObject / CreateDynamicObject / RemoveBuildingForPlayer lines
+
+# Removals of base-game objects, as MTA's removeWorldModel and SA-MP's RemoveBuildingForPlayer do.
+# model = -1 removes every model in the sphere; interior defaults to -1 (every interior).
+# [[remove]]
+# model = 16203
+# x = 199.3
+# y = 1943.8
+# z = 18.2
+# radius = 250
