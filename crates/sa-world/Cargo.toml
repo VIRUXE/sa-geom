@@ -1,0 +1,18 @@
+[package]
+name = "sa-world"
+description = "GTA San Andreas collision world: raycasts, ground height and normals, slope placement"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[features]
+default = ["embedded"]
+# Embed the prebuilt vanilla world (data/vanilla.sagw.zst) into the binary.
+embedded = []
+
+[dependencies]
+sa-formats.workspace = true
+bytemuck = { version = "1", features = ["derive", "extern_crate_alloc"] }
+ruzstd = "0.8"
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"

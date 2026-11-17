@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/sa-formats"]
+members = ["crates/sa-formats", "crates/sa-world", "crates/sa-geom-cli"]
 
 [workspace.package]
 version = "0.1.0"
