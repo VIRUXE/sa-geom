@@ -6,6 +6,8 @@
 //!   sageomGround(x, y [, zFrom = 1000, interior = 0, depth = 1200]) -> z, nx, ny, nz, material, model | false
 //!   sageomRaycast(x1, y1, z1, x2, y2, z2 [, interior = 0]) -> true, x, y, z, nx, ny, nz, material, model | false
 //!   sageomPlace(x, y, zFrom, yaw [, lift = 0, interior = 0, width = 0, depth = 0]) -> x, y, z, rx, ry, rz, nx, ny, nz | false
+//!   sageomPlaceModel(model, x, y, zFrom, yaw [, lift = 0, interior = 0]) -> x, y, z, rx, ry, rz, nx, ny, nz | false
+//!   sageomGetModelBounds(model) -> minX, minY, minZ, maxX, maxY, maxZ | false
 //!   sageomGroundMany({ {x, y [, zFrom]}, ... } [, interior = 0]) -> { {z, nx, ny, nz} | false, ... } | false
 //!   sageomWaterLevel(x, y) -> z | false
 //!   sageomAddOverlay(path) -> true, summary | false, error   (path relative to the server root)
@@ -75,7 +77,9 @@ pub unsafe extern "C" fn RegisterFunctions(l: *mut lua_State) {
     }
     let Some(f) = vtable_entry(3) else { return };
     let register: RegisterFn = std::mem::transmute(f);
-    let fns: [(&std::ffi::CStr, lua::lua_CFunction); 7] = [
+    let fns: [(&std::ffi::CStr, lua::lua_CFunction); 9] = [
+        (c"sageomPlaceModel", l_place_model),
+        (c"sageomGetModelBounds", l_model_bounds),
         (c"sageomIsReady", l_is_ready),
         (c"sageomGround", l_ground),
         (c"sageomRaycast", l_raycast),
@@ -311,5 +315,43 @@ unsafe fn l_add_overlay_impl(l: *mut lua_State) -> c_int {
             s.push_str(&e);
             2
         }
+    }
+}
+
+unsafe extern "C" fn l_place_model(l: *mut lua_State) -> c_int {
+    guard(l, || l_place_model_impl(l))
+}
+
+unsafe fn l_place_model_impl(l: *mut lua_State) -> c_int {
+    let Some(s) = lua_of(l) else { return 0 };
+    let (Some(m), Some(x), Some(y), Some(from), Some(yaw)) = (s.num(1), s.num(2), s.num(3), s.num(4), s.num(5)) else { return fail(&s) };
+    let lift = s.num(6).unwrap_or(0.0) as f32;
+    let f = filter(s.num(7));
+    match shared::with(|w| w.place_model(m as i32, x as f32, y as f32, from as f32, SEARCH_DEPTH, yaw as f32, lift, f)).flatten() {
+        Some((p, h)) => {
+            for v in [p.pos.x, p.pos.y, p.pos.z, p.rot[0], p.rot[1], p.rot[2], h.normal.x, h.normal.y, h.normal.z] {
+                s.push_num(v as f64);
+            }
+            9
+        }
+        None => fail(&s),
+    }
+}
+
+unsafe extern "C" fn l_model_bounds(l: *mut lua_State) -> c_int {
+    guard(l, || l_model_bounds_impl(l))
+}
+
+unsafe fn l_model_bounds_impl(l: *mut lua_State) -> c_int {
+    let Some(s) = lua_of(l) else { return 0 };
+    let Some(m) = s.num(1) else { return fail(&s) };
+    match shared::with(|w| w.model_bounds(m as i32)).flatten() {
+        Some(b) => {
+            for v in [b.min.x, b.min.y, b.min.z, b.max.x, b.max.y, b.max.z] {
+                s.push_num(v as f64);
+            }
+            6
+        }
+        None => fail(&s),
     }
 }

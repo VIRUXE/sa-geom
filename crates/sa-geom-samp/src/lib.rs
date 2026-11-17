@@ -70,6 +70,8 @@ pub unsafe extern "system" fn AmxLoad(amx: *mut Amx) -> c_int {
         (c"SAGeom_GetGround", n_get_ground),
         (c"SAGeom_RayCast", n_raycast),
         (c"SAGeom_Place", n_place),
+        (c"SAGeom_PlaceModel", n_place_model),
+        (c"SAGeom_GetModelBounds", n_model_bounds),
         (c"SAGeom_WaterLevel", n_water),
         (c"SAGeom_AddOverlay", n_add_overlay),
     ];
@@ -231,6 +233,42 @@ unsafe extern "C" fn n_place(amx: *mut Amx, p: *const Cell) -> Cell {
                 a.set_float(6, pl.rot[0]);
                 a.set_float(7, pl.rot[1]);
                 a.set_float(8, pl.rot[2]);
+                1
+            }
+            None => 0,
+        }
+    })
+}
+
+/// native bool:SAGeom_PlaceModel(modelid, Float:x, Float:y, Float:zFrom, Float:yaw, &Float:z, &Float:rx, &Float:ry,
+///     &Float:rz, Float:lift = 0.0, interior = 0);
+unsafe extern "C" fn n_place_model(amx: *mut Amx, p: *const Cell) -> Cell {
+    guard(amx, p, |a| {
+        let (Some(m), Some(x), Some(y), Some(from), Some(yaw)) = (a.cell(1), a.float(2), a.float(3), a.float(4), a.float(5)) else { return 0 };
+        let lift = a.float_or(10, 0.0);
+        let f = filter(a.int_or(11, 0));
+        match shared::with(|w| w.place_model(m, x, y, from, SEARCH_DEPTH, yaw, lift, f)).flatten() {
+            Some((pl, _)) => {
+                a.set_float(6, pl.pos.z);
+                a.set_float(7, pl.rot[0]);
+                a.set_float(8, pl.rot[1]);
+                a.set_float(9, pl.rot[2]);
+                1
+            }
+            None => 0,
+        }
+    })
+}
+
+/// native bool:SAGeom_GetModelBounds(modelid, &Float:minX, &Float:minY, &Float:minZ, &Float:maxX, &Float:maxY, &Float:maxZ);
+unsafe extern "C" fn n_model_bounds(amx: *mut Amx, p: *const Cell) -> Cell {
+    guard(amx, p, |a| {
+        let Some(m) = a.cell(1) else { return 0 };
+        match shared::with(|w| w.model_bounds(m)).flatten() {
+            Some(b) => {
+                for (i, v) in [b.min.x, b.min.y, b.min.z, b.max.x, b.max.y, b.max.z].into_iter().enumerate() {
+                    a.set_float(i + 2, v);
+                }
                 1
             }
             None => 0,

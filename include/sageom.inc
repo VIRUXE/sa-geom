@@ -34,6 +34,15 @@ native bool:SAGeom_RayCast(Float:x1, Float:y1, Float:z1, Float:x2, Float:y2, Flo
 native bool:SAGeom_Place(Float:x, Float:y, Float:zFrom, Float:yaw, &Float:z, &Float:rx, &Float:ry, &Float:rz,
     Float:lift = 0.0, interior = 0, Float:width = 0.0, Float:depth = 0.0);
 
+/// Lay model `modelid` on the ground under (x, y): its collision bounds give the footprint it rests on and how
+/// far its origin sits above its base, so the object's bottom (not its centre) meets the ground. `z` is what to
+/// pass to CreateObject. Models without collision fall back to a single point with no base offset.
+native bool:SAGeom_PlaceModel(modelid, Float:x, Float:y, Float:zFrom, Float:yaw, &Float:z, &Float:rx, &Float:ry,
+    &Float:rz, Float:lift = 0.0, interior = 0);
+
+/// Collision bounds of a model in its own space (models with collision only; SA-MP objects after an overlay).
+native bool:SAGeom_GetModelBounds(modelid, &Float:minX, &Float:minY, &Float:minZ, &Float:maxX, &Float:maxY, &Float:maxZ);
+
 /// Water surface height at (x, y), when water covers it.
 native bool:SAGeom_WaterLevel(Float:x, Float:y, &Float:z);
 

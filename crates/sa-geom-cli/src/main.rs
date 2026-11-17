@@ -50,8 +50,12 @@ enum Cmd {
         lift: f32,
         /// Fit a WIDTH,DEPTH footprint (metres) instead of a single point: highest z of the 4 corners and centre,
         /// normal of the plane through the corners.
-        #[arg(long, value_parser = parse_pair)]
+        #[arg(long, value_parser = parse_pair, conflicts_with = "model")]
         footprint: Option<(f32, f32)>,
+        /// Place this model: its collision bounds give the footprint and lift its base (not its origin) onto
+        /// the ground.
+        #[arg(long)]
+        model: Option<i32>,
         #[command(flatten)]
         world: WorldOpts,
     },
@@ -62,7 +66,7 @@ enum Cmd {
         #[command(flatten)]
         world: WorldOpts,
     },
-    /// Many ground queries from stdin, one per line: JSON objects {"x","y","z"?,"yaw"?,"lift"?,"w"?,"d"?,"interior"?}
+    /// Many ground queries from stdin, one per line: JSON objects {"x","y","z"?,"yaw"?,"lift"?,"w"?,"d"?,"model"?,"interior"?}
     /// or CSV "x,y[,z[,yaw[,lift]]]" (z = where the downward ray starts, default 1000).
     Batch {
         /// Output format.
@@ -148,19 +152,20 @@ struct GroundQ {
     yaw: f32,
     lift: f32,
     footprint: Option<(f32, f32)>,
+    model: Option<i32>,
     interior: i32,
 }
 
 fn ground_json(w: &World, q: &GroundQ) -> Value {
     let f = Filter::interior(q.interior);
-    let h = match q.footprint {
-        Some((fw, fd)) => w.footprint(q.x, q.y, q.from, q.depth, q.yaw, fw, fd, f),
-        None => w.ground(q.x, q.y, q.from, q.depth, f),
+    let r = match (q.model, q.footprint) {
+        (Some(m), _) => w.place_model(m, q.x, q.y, q.from, q.depth, q.yaw, q.lift, f).map(|(p, h)| (h, p)),
+        (None, Some((fw, fd))) => w.footprint(q.x, q.y, q.from, q.depth, q.yaw, fw, fd, f).map(|h| (h, place(h.pos, h.normal, q.yaw, q.lift))),
+        (None, None) => w.ground(q.x, q.y, q.from, q.depth, f).map(|h| (h, place(h.pos, h.normal, q.yaw, q.lift))),
     };
     let water = w.water_z(q.x, q.y);
-    match h {
-        Some(h) => {
-            let p = place(h.pos, h.normal, q.yaw, q.lift);
+    match r {
+        Some((h, p)) => {
             let mut v = hit_json(w, &h);
             v["rot"] = json!([r3(p.rot[0]), r3(p.rot[1]), r3(p.rot[2])]);
             v["pos"] = json!([r3(p.pos.x), r3(p.pos.y), r3(p.pos.z)]);
@@ -175,9 +180,9 @@ fn ground_json(w: &World, q: &GroundQ) -> Value {
 fn main() {
     let cli = Cli::parse();
     match cli.cmd {
-        Cmd::Ground { x, y, from, depth, yaw, lift, footprint, world } => {
+        Cmd::Ground { x, y, from, depth, yaw, lift, footprint, model, world } => {
             let w = load(&world);
-            let v = ground_json(&w, &GroundQ { x, y, from, depth, yaw, lift, footprint, interior: world.interior });
+            let v = ground_json(&w, &GroundQ { x, y, from, depth, yaw, lift, footprint, model, interior: world.interior });
             println!("{}", serde_json::to_string_pretty(&v).unwrap());
             if v["hit"] == false {
                 std::process::exit(1);
@@ -222,6 +227,7 @@ fn main() {
                         yaw: g("yaw").unwrap_or(0.0),
                         lift: g("lift").unwrap_or(0.0),
                         footprint: fp,
+                        model: v.get("model").and_then(|x| x.as_i64()).map(|m| m as i32),
                         interior: g("interior").map(|i| i as i32).unwrap_or(world.interior),
                     };
                     (q, Some(v))
@@ -238,6 +244,7 @@ fn main() {
                         yaw: n.get(3).copied().unwrap_or(0.0),
                         lift: n.get(4).copied().unwrap_or(0.0),
                         footprint: None,
+                        model: None,
                         interior: world.interior,
                     };
                     (q, None)

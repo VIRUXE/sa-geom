@@ -139,28 +139,60 @@ impl World {
         self.raycast(v3(x, y, z_from), v3(x, y, z_from - depth), filter)
     }
 
-    /// Ground under a `w` x `d` footprint turned `yaw` degrees: rays at the centre and the 4 corners. The result's
-    /// z is the highest hit (so the footprint does not sink in) and its normal is the plane through the corner
-    /// hits (the centre's normal when a corner misses). Position x/y stay at the centre.
+    /// Ground under a `w` x `d` footprint centred on (x, y) and turned `yaw` degrees. See [`World::rest_box`].
     pub fn footprint(&self, x: f32, y: f32, z_from: f32, depth: f32, yaw: f32, w: f32, d: f32, filter: Filter) -> Option<Hit> {
+        self.rest_box(x, y, z_from, depth, yaw, [-w * 0.5, w * 0.5, -d * 0.5, d * 0.5], filter)
+    }
+
+    /// Where a flat-bottomed object with origin (x, y) rests: `rect` = [min x, max x, min y, max y] of its base in
+    /// its own space, turned `yaw` degrees. Rays go down at the origin and at the 4 corners. With every corner on
+    /// the ground the result lies on the plane through the corners at the origin, raised along that plane's normal
+    /// just enough that no corner (nor the ground under the origin) pokes through the base; otherwise it is the
+    /// ground under the origin with its own normal.
+    pub fn rest_box(&self, x: f32, y: f32, z_from: f32, depth: f32, yaw: f32, rect: [f32; 4], filter: Filter) -> Option<Hit> {
         let centre = self.ground(x, y, z_from, depth, filter)?;
         let (s, c) = yaw.to_radians().sin_cos();
-        let right = v3(c, s, 0.0) * (w * 0.5);
-        let fwd = v3(-s, c, 0.0) * (d * 0.5);
-        let corners = [right + fwd, -right + fwd, -right - fwd, right - fwd];
-        let hits: Vec<Option<Hit>> = corners.iter().map(|o| self.ground(x + o.x, y + o.y, z_from, depth, filter)).collect();
-        let mut out = centre;
-        for h in hits.iter().flatten() {
-            out.pos.z = out.pos.z.max(h.pos.z);
+        // local x (right) -> (c, s), local y (forward) -> (-s, c)
+        let at = |lx: f32, ly: f32| v3(x + lx * c - ly * s, y + lx * s + ly * c, 0.0);
+        let [x0, x1, y0, y1] = rect;
+        let corners = [at(x0, y0), at(x1, y0), at(x1, y1), at(x0, y1)];
+        let hits: Vec<Option<Hit>> = corners.iter().map(|p| self.ground(p.x, p.y, z_from, depth, filter)).collect();
+        let [Some(a), Some(b), Some(c2), Some(e)] = [hits[0], hits[1], hits[2], hits[3]] else { return Some(centre) };
+        let mut n = (c2.pos - a.pos).cross(e.pos - b.pos).normalize();
+        if n.z < 0.0 {
+            n = -n;
         }
-        if let [Some(a), Some(b), Some(c2), Some(e)] = [hits[0], hits[1], hits[2], hits[3]] {
-            let n = (c2.pos - a.pos).cross(e.pos - b.pos).normalize();
-            let n = if n.z < 0.0 { -n } else { n };
-            if n.len() > 0.5 {
-                out.normal = n;
+        if n.z < 0.05 {
+            return Some(centre);
+        }
+        let mid = (a.pos + b.pos + c2.pos + e.pos) * 0.25;
+        let plane_z = mid.z - (n.x * (x - mid.x) + n.y * (y - mid.y)) / n.z;
+        let base = v3(x, y, plane_z);
+        let lift = [a.pos, b.pos, c2.pos, e.pos, centre.pos].iter().map(|p| (*p - base).dot(n)).fold(0.0f32, f32::max);
+        let mut out = centre;
+        out.pos = base + n * lift;
+        out.normal = n;
+        Some(out)
+    }
+
+    /// Bounds of a model's collision in its own space, if the world has collision for it.
+    pub fn model_bounds(&self, id: i32) -> Option<Aabb> {
+        self.by_id.get(&id).map(|&m| self.models[m as usize].bounds)
+    }
+
+    /// Lay model `id` on the ground under (x, y): its collision bounds give the footprint and how far its origin
+    /// sits above its base. Falls back to a single point (no base offset) for a model without collision.
+    pub fn place_model(&self, id: i32, x: f32, y: f32, z_from: f32, depth: f32, yaw: f32, lift: f32, filter: Filter) -> Option<(Placement, Hit)> {
+        match self.model_bounds(id) {
+            Some(b) => {
+                let h = self.rest_box(x, y, z_from, depth, yaw, [b.min.x, b.max.x, b.min.y, b.max.y], filter)?;
+                Some((place(h.pos, h.normal, yaw, lift - b.min.z), h))
+            }
+            None => {
+                let h = self.ground(x, y, z_from, depth, filter)?;
+                Some((place(h.pos, h.normal, yaw, lift), h))
             }
         }
-        Some(out)
     }
 
     /// Water surface height at (x, y), if a water polygon covers it.
