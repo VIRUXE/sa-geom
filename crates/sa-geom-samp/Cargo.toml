@@ -1,0 +1,13 @@
+[package]
+name = "sa-geom-samp"
+description = "SA-MP / open.mp plugin: ground height, raycasts and slope placement natives"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "sageom"
+crate-type = ["cdylib"]
+
+[dependencies]
+sa-world.workspace = true
