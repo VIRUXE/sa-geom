@@ -94,12 +94,11 @@ impl World {
         let d = to - from;
         let mut best: Option<(f32, u32, Vec3, u32)> = None; // t, instance, local normal, material
         let mut tmax = 1.0f32;
-        bvh::traverse(&self.tlas, from, d, &mut tmax, |first, count, tmax| {
-            for k in first..first + count {
-                let ii = self.tlas_order[k as usize];
+        self.ray_candidates(from, d, &mut tmax, |ii, tmax| {
+            {
                 let inst = &self.instances[ii as usize];
                 if !filter.accepts(inst.interior) {
-                    continue;
+                    return;
                 }
                 let m = &self.models[inst.model as usize];
                 // affine maps preserve the segment parameter t
@@ -220,12 +219,9 @@ impl World {
     /// Live instances whose bounds overlap the box `q`.
     pub fn instances_in(&self, q: Aabb, filter: Filter) -> Vec<u32> {
         let mut out = Vec::new();
-        bvh::query_box(&self.tlas, q, |f, c| {
-            for k in f..f + c {
-                let ii = self.tlas_order[k as usize];
-                if filter.accepts(self.instances[ii as usize].interior) {
-                    out.push(ii);
-                }
+        self.box_candidates(q, |ii| {
+            if filter.accepts(self.instances[ii as usize].interior) {
+                out.push(ii);
             }
         });
         out
@@ -279,12 +275,9 @@ impl World {
         let r = v3(radius, radius, radius);
         let q = Aabb { min: p - r, max: p + r };
         let mut out = Vec::new();
-        bvh::query_box(&self.tlas, q, |f, c| {
-            for k in f..f + c {
-                let ii = self.tlas_order[k as usize];
-                if self.instances[ii as usize].bounds.contains_sphere(p, radius) {
-                    out.push(ii);
-                }
+        self.box_candidates(q, |ii| {
+            if self.instances[ii as usize].bounds.contains_sphere(p, radius) {
+                out.push(ii);
             }
         });
         out

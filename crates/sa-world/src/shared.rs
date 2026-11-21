@@ -1,7 +1,9 @@
 //! A process-wide world for server plugins: loaded on a background thread so a server never blocks on startup,
 //! read-locked by queries and write-locked by overlays. `reload` builds a fresh world (plus an overlay) on a background
-//! thread and swaps it in, so a changed overlay replaces the old one without restarting the server.
+//! thread and swaps it in, so a changed overlay replaces the old one without restarting the server. Live edits
+//! (`edit`, see `live`) apply to the current world at once and are replayed onto a reloaded world before the swap.
 
+use crate::live::Op;
 use crate::World;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -16,6 +18,8 @@ static GENERATION: AtomicU64 = AtomicU64::new(0);
 static RELOADING: AtomicBool = AtomicBool::new(false);
 /// The last reload's outcome, once one has finished.
 static LAST_RELOAD: Mutex<Option<Result<String, String>>> = Mutex::new(None);
+/// Live edits made while a reload builds its world, to replay onto it before the swap. Locked after the world.
+static RECORDING: Mutex<Option<Vec<Op>>> = Mutex::new(None);
 
 fn cell() -> &'static RwLock<Option<World>> {
     WORLD.get_or_init(|| RwLock::new(None))
@@ -63,6 +67,20 @@ pub fn with<R>(f: impl FnOnce(&World) -> R) -> Option<R> {
     g.as_ref().map(f)
 }
 
+/// Make a live edit on the loaded world: `f` changes it and returns its result and the ops that replay the change
+/// (empty when nothing changed). None while the world is still loading.
+pub fn edit<R>(f: impl FnOnce(&mut World) -> (R, Vec<Op>)) -> Option<R> {
+    let mut g = cell().write().unwrap_or_else(|e| e.into_inner());
+    let w = g.as_mut()?;
+    let (r, ops) = f(w);
+    if !ops.is_empty() {
+        if let Some(rec) = RECORDING.lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
+            rec.extend(ops);
+        }
+    }
+    Some(r)
+}
+
 /// Apply an overlay to the loaded world.
 pub fn add_overlay(path: &Path) -> Result<String, String> {
     let mut g = cell().write().unwrap_or_else(|e| e.into_inner());
@@ -90,9 +108,23 @@ pub fn reload(overlay: Option<PathBuf>, on_done: impl FnOnce(&Result<String, Str
             Some(p) => w.apply_overlay(p).map(|r| (w, format!(", overlay {}: {r}", p.display()))),
             None => Ok((w, String::new())),
         });
-        let r = built.map(|(w, rep)| {
-            let msg = format!("world reloaded in {} ms ({} objects){rep}", t.elapsed().as_millis(), w.live_instances());
-            let old = std::mem::replace(&mut *cell().write().unwrap_or_else(|e| e.into_inner()), Some(w));
+        let r = built.map(|(mut w, rep)| {
+            // the live edits: a snapshot replayed off the lock, then whatever changed meanwhile under it
+            let snapshot = {
+                let g = cell().read().unwrap_or_else(|e| e.into_inner());
+                let ops = g.as_ref().map(|cur| cur.live_ops()).unwrap_or_default();
+                *RECORDING.lock().unwrap_or_else(|e| e.into_inner()) = Some(Vec::new());
+                ops
+            };
+            w.apply_all(&snapshot);
+            let mut g = cell().write().unwrap_or_else(|e| e.into_inner());
+            let late = RECORDING.lock().unwrap_or_else(|e| e.into_inner()).take().unwrap_or_default();
+            if !late.is_empty() {
+                w.apply_all(&late);
+            }
+            let msg = format!("world reloaded in {} ms ({} objects, {} of them live){rep}", t.elapsed().as_millis(), w.live_instances(), w.live.slots.len());
+            let old = g.replace(w);
+            drop(g);
             drop(old); // freed outside the lock
             GENERATION.fetch_add(1, Ordering::AcqRel);
             msg

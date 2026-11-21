@@ -140,6 +140,18 @@ impl Lua {
         let b = unsafe { std::slice::from_raw_parts(p as *const u8, len) };
         Some(String::from_utf8_lossy(b).into_owned())
     }
+    /// String argument `i` as raw bytes.
+    pub fn bytes(&self, i: c_int) -> Option<Vec<u8>> {
+        if i > self.top() || self.ty(i) != LUA_TSTRING {
+            return None;
+        }
+        let mut len = 0usize;
+        let p = unsafe { (self.a.tolstring)(self.l, i, &mut len) };
+        if p.is_null() {
+            return None;
+        }
+        Some(unsafe { std::slice::from_raw_parts(p as *const u8, len) }.to_vec())
+    }
     pub fn push_num(&self, v: f64) {
         unsafe { (self.a.pushnumber)(self.l, v) }
     }

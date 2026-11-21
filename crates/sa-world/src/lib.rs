@@ -11,6 +11,7 @@ pub mod bake;
 pub mod bvh;
 pub mod euler;
 pub mod io;
+pub mod live;
 pub mod math;
 pub mod overlay;
 pub mod query;
