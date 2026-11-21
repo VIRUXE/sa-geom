@@ -11,6 +11,10 @@
 //!   sageomGroundMany({ {x, y [, zFrom]}, ... } [, interior = 0]) -> { {z, nx, ny, nz} | false, ... } | false
 //!   sageomWaterLevel(x, y) -> z | false
 //!   sageomAddOverlay(path) -> true, summary | false, error   (path relative to the server root)
+//!   sageomReload([overlayPath]) -> true | false, reason   (starts rebuilding the world plus that overlay in the
+//!     background; the old world and every overlay applied to it are replaced once it is built)
+//!   sageomReloadStatus() -> generation, busy, ok | false, message | false   (generation counts swapped-in worlds;
+//!     ok and message describe the last finished reload, false before any)
 
 mod lua;
 
@@ -82,7 +86,7 @@ pub unsafe extern "C" fn RegisterFunctions(l: *mut lua_State) {
     }
     let Some(f) = vtable_entry(3) else { return };
     let register: RegisterFn = std::mem::transmute(f);
-    let fns: [(&std::ffi::CStr, lua::lua_CFunction); 9] = [
+    let fns: [(&std::ffi::CStr, lua::lua_CFunction); 11] = [
         (c"sageomPlaceModel", l_place_model),
         (c"sageomGetModelBounds", l_model_bounds),
         (c"sageomIsReady", l_is_ready),
@@ -92,6 +96,8 @@ pub unsafe extern "C" fn RegisterFunctions(l: *mut lua_State) {
         (c"sageomGroundMany", l_ground_many),
         (c"sageomWaterLevel", l_water),
         (c"sageomAddOverlay", l_add_overlay),
+        (c"sageomReload", l_reload),
+        (c"sageomReloadStatus", l_reload_status),
     ];
     for (name, func) in fns {
         register(m, l, name.as_ptr(), func);
@@ -321,6 +327,51 @@ unsafe fn l_add_overlay_impl(l: *mut lua_State) -> c_int {
             2
         }
     }
+}
+
+unsafe extern "C" fn l_reload(l: *mut lua_State) -> c_int {
+    guard(l, || l_reload_impl(l))
+}
+
+unsafe fn l_reload_impl(l: *mut lua_State) -> c_int {
+    let Some(s) = lua_of(l) else { return 0 };
+    let overlay = s.str(1).map(std::path::PathBuf::from);
+    // no log from the worker thread (the module manager is not ours to call off the main thread): Lua polls
+    // sageomReloadStatus and reports the outcome
+    if shared::reload(overlay, |_| {}) {
+        s.push_bool(true);
+        1
+    } else {
+        s.push_bool(false);
+        s.push_str(if shared::is_ready() { "a reload is already running" } else { "world is still loading" });
+        2
+    }
+}
+
+unsafe extern "C" fn l_reload_status(l: *mut lua_State) -> c_int {
+    guard(l, || l_reload_status_impl(l))
+}
+
+unsafe fn l_reload_status_impl(l: *mut lua_State) -> c_int {
+    let Some(s) = lua_of(l) else { return 0 };
+    let (generation, busy, last) = shared::reload_status();
+    s.push_num(generation as f64);
+    s.push_bool(busy);
+    match last {
+        Some(Ok(m)) => {
+            s.push_bool(true);
+            s.push_str(&m);
+        }
+        Some(Err(e)) => {
+            s.push_bool(false);
+            s.push_str(&e);
+        }
+        None => {
+            s.push_bool(false);
+            s.push_bool(false);
+        }
+    }
+    4
 }
 
 unsafe extern "C" fn l_place_model(l: *mut lua_State) -> c_int {

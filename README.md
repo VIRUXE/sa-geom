@@ -112,6 +112,8 @@ open.mp's quaternions. The object's up axis follows the surface normal, and its 
 | `sageomGroundMany({ {x, y [, zFrom]}, ... } [, interior])` | `{ {z, nx, ny, nz} or false, ... }` |
 | `sageomWaterLevel(x, y)` | `z` or `false` |
 | `sageomAddOverlay(path)` | `true, summary` or `false, error` (path relative to the server root) |
+| `sageomReload([path])` | `true` or `false, reason`: rebuilds the world plus that overlay in the background and swaps it in, dropping every overlay applied before (for a changed overlay, without a server restart) |
+| `sageomReloadStatus()` | `generation, busy, ok, message`: generation counts swapped-in worlds; `ok`/`message` are the last finished reload's (`false, false` before any) |
 
 ### Pawn (SA-MP, open.mp)
 
