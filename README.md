@@ -115,6 +115,24 @@ open.mp's quaternions. The object's up axis follows the surface normal, and its 
 | `sageomReload([path])` | `true` or `false, reason`: rebuilds the world plus that overlay in the background and swaps it in, dropping every overlay applied before (for a changed overlay, without a server restart) |
 | `sageomReloadStatus()` | `generation, busy, ok, message`: generation counts swapped-in worlds; `ok`/`message` are the last finished reload's (`false, false` before any) |
 
+Live edits apply at once (the next query sees them), survive `sageomReload`, and belong to the resource that made
+them: when it stops, the module drops them. Most servers never call these themselves: the [`sageom`
+resource](#keeping-the-world-in-sync-with-your-server-mta) does it for every object on the server.
+
+| Function | Returns |
+|---|---|
+| `sageomAddObject(model, x, y, z [, rx, ry, rz, interior, sx, sy, sz])` | a handle, or `false` when the model has no collision. Rotation in degrees as an MTA object's (`.map`, `setElementRotation`); scale as `setObjectScale` |
+| `sageomAddObjects({ {model, x, y, z [, rx, ry, rz, interior, sx, sy, sz]}, ... })` | `{ handle or false, ... }`, in one batch (24k rows in about 55 ms) |
+| `sageomMoveObject(handle, x, y, z [, rx, ry, rz])` | `true` or `false` |
+| `sageomSetObjectScale(handle, sx [, sy, sz])` | `true` or `false` |
+| `sageomSetObjectModel(handle, model)` | `true`, or `false` when the model has no collision: the handle stays valid and the object collides again once a collision for that model is loaded |
+| `sageomRemoveObject(handle)` | `true` or `false` |
+| `sageomRemoveWorldModel(model, radius, x, y, z [, interior])` | `true, count`: hides the game's own instances of `model` around the point, as `removeWorldModel` (objects added through the module stay, as `createObject` objects do) |
+| `sageomRestoreWorldModel(model, radius, x, y, z [, interior])` | `true, count`: undoes the removals of `model` centred within `radius` of the point |
+| `sageomReplaceCOL(colData, id)` | `true` or `false, error`: the first model of the `.col` file in `colData` (a Lua string of its bytes) is model `id`'s collision for every instance, now and later. Any id: a game model's, or a new one (18631+, your own). An empty collision model leaves the id without collision |
+| `sageomRestoreCOL(id)` | `true` or `false`: back to the game's collision (none, for an id the game does not have) |
+| `sageomGetStats()` | `{ objects, objectsWithoutCollision, removals, removedInstances, cols, pending, liveTree, instances, generation, nextHandle, reloading }` |
+
 ### Pawn (SA-MP, open.mp)
 
 ```pawn
@@ -256,6 +274,43 @@ Objects only collide if the world has collision for their model. Models you plac
 the world knows (in an `.img`, or loose `.dff` files listed in a manifest's `dff` entries). Vanilla models do. For SA-MP's added objects
 (ids 18631 and up), add the SA-MP client's `SAMPCOL.img` and `SAMP.ide`. With those, 781 SA-MP models gain
 collision. Do the same for custom models with their `.col` files.
+
+## Keeping the world in sync with your server (MTA)
+
+The module knows the game's map and your overlays. The objects your server creates while it runs (map resources,
+scripted doors and gates, buildings) are kept in step by the `sageom` resource in [`mta/sageom`](mta/sageom):
+
+1. Copy `mta/sageom` into your server's `resources` folder.
+2. Give it two rights, in `acl.xml` (or approve its `aclrequest` with `aclrequest allow sageom all` in the console):
+   - `function.addDebugHook`: it watches `createObject`, `setElementPosition` and the other functions that change
+     objects in every resource;
+   - `general.ModifyOtherObjects`: `replaceCOL(":otherresource/file.col", id)` reads another resource's file with
+     `fileOpen`, which MTA only allows with this right, even to read.
+   Without the first it still sends what exists when it starts and what each resource brings when it starts, and
+   drops destroyed elements, but misses later changes (it says so in the log).
+3. Start it before your other resources (`<resource src="sageom" startup="1" />` early in `mtaserver.conf`), so it
+   sees their `removeWorldModel` calls.
+
+From then on every object and building in dimension 0 collides on the server where it is: objects from `.map` files,
+`createObject`, `createBuilding`, `cloneElement` and `loadMapData`, moved by `setElementPosition`/`Rotation`,
+`moveObject` (where it stops), attachments to other objects, `setObjectScale`, `setElementModel`,
+`setElementInterior`, `setElementDimension` (only dimension 0 counts) and `setElementCollisionsEnabled`. Objects
+attached to vehicles or peds have no server collision while attached. `removeWorldModel` / `restoreWorldModel` calls
+and maps' `<removeWorldObject>` are mirrored. A `sageomReload` keeps all of it.
+
+What only clients do, the server cannot see; tell the resource:
+
+| Export | For |
+|---|---|
+| `exports.sageom:replaceCOL(path, id)` | a collision clients load with `engineReplaceCOL` (custom models, or new collision for a game model). `path` is `":resource/file.col"`, or a path inside the calling resource. Kept until `restoreCOL` or until the calling resource stops |
+| `exports.sageom:restoreCOL(id)` | undoes it |
+| `exports.sageom:setElementCollisionModel(element, id)` | an object the server creates with a stand-in model while clients show another (`engineRequestModel` ids): the module uses `id`'s collision for it, through model and position changes. `false` goes back to its own model |
+| `exports.sageom:setBuildingTransform(element, model, rx, ry, rz)` | buildings created before `sageom` started: on the server `getElementModel` and `getElementRotation` return `false` for buildings, so it only learns them from the `createBuilding` call itself, or from this |
+| `exports.sageom:getStats()` | the module's stats plus `tracked`, `trackedWithoutCollision`, `collisionModels`, `replacedCols`, `buildingsKnown`, `ready` |
+
+Objects created only on clients (client-side `createObject`/`createBuilding`) need to be created on the server too,
+or loaded as an overlay. The debug hooks cost MTA about 15 µs per call of a watched function (any element type);
+other functions are not slowed down.
 
 ## How it works
 

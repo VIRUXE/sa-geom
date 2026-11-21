@@ -1,0 +1,16 @@
+<meta>
+    <info name="sageom" author="sa-geom contributors" version="1.0.0" type="script"
+        description="Keeps the sa-geom server collision world (ml_sageom) in step with the server's objects, buildings and world model removals" />
+    <min_mta_version server="1.6.0" />
+    <script src="server.lua" type="server" />
+    <export function="replaceCOL" type="server" />
+    <export function="restoreCOL" type="server" />
+    <export function="setElementCollisionModel" type="server" />
+    <export function="setBuildingTransform" type="server" />
+    <export function="getStats" type="server" />
+    <!-- addDebugHook sees every resource's calls; fileOpen reads the .col files of other resources -->
+    <aclrequest>
+        <right name="function.addDebugHook" access="true" />
+        <right name="general.ModifyOtherObjects" access="true" />
+    </aclrequest>
+</meta>
